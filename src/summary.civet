@@ -27,12 +27,23 @@ export interface RunSummary extends Counts {
 export interface ResultsSummary {
   directory: string;
   runs: RunSummary[];
+  groups: GroupSummary[];
   totals: Counts;
   warnings: string[];
 }
 
+export interface GroupSummary extends Counts {
+  dimension: number | null;
+  points: number | null;
+  runCount: number;
+  finishedRuns: number;
+  expected: number | null;
+  remaining: number | null;
+}
+
 const counts = (): Counts => ({trials: 0, found: 0, candidates: 0, inconclusive: 0, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 0, searchMs: 0});
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+const compareParameter = (a: number | null, b: number | null): number => a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
 const statusKeys = new Map<string, 'found' | 'candidates' | 'inconclusive' | 'errors'>([
   ['found', 'found'], ['no-unfolding', 'candidates'], ['inconclusive', 'inconclusive'], ['error', 'errors']
 ]);
@@ -41,7 +52,7 @@ const statusKeys = new Map<string, 'found' | 'candidates' | 'inconclusive' | 'er
 // large coordinate files, but only rows with an existing trial file count.
 export function summarizeResults(path = 'results'): ResultsSummary {
   const directory = resolve(path);
-  const result: ResultsSummary = {directory, runs: [], totals: counts(), warnings: []};
+  const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
   function scan(current: string): void {
     const entries = readdirSync(current, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1);
     const files = new Set(entries.filter(e => e.isFile()).map(e => e.name));
@@ -107,23 +118,48 @@ export function summarizeResults(path = 'results'): ResultsSummary {
     for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) scan(join(current, entry.name));
   }
   scan(directory);
+  result.runs.sort((a, b) => compareParameter(a.dimension, b.dimension) || compareParameter(a.points, b.points)
+    || (a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0));
+  for (const run of result.runs) {
+    let group = result.groups.at(-1);
+    if (!group || group.dimension !== run.dimension || group.points !== run.points) {
+      group = {...counts(), dimension: run.dimension, points: run.points, runCount: 0, finishedRuns: 0, expected: 0, remaining: 0};
+      result.groups.push(group);
+    }
+    group.runCount++;
+    if (run.finished) group.finishedRuns++;
+    group.expected = group.expected === null || run.expected === null ? null : group.expected + run.expected;
+    group.remaining = group.remaining === null || run.remaining === null ? null : group.remaining + run.remaining;
+    for (const key of Object.keys(result.totals) as (keyof Counts)[]) group[key] += run[key];
+  }
   return result;
 }
 
 export function formatSummary(summary: ResultsSummary): string {
   const t = summary.totals;
-  const lines = [
-    `Results: ${summary.directory}`,
-    `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
-    `Found: ${t.found} | Candidates: ${t.candidates} | Inconclusive: ${t.inconclusive} | Errors: ${t.errors} | Unreadable: ${t.unreadable}`,
-    `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${(t.searchMs / 1000).toFixed(1)}s.`,
-    ''
+  const lines = [`Results: ${summary.directory}`, ''];
+  const rows = [['Run', 'Kind', 'd', 'Points', 'Saved/Planned', 'Found', 'Candidate', 'Inconcl.', 'Error', 'Unread.', 'State']];
+  const row = (label: string, kind: string, dimension: number | null, points: number | null, c: Counts, expected: number | null, state: string): string[] => [
+    label, kind, String(dimension ?? '-'), String(points ?? '-'), `${c.trials}/${expected ?? '?'}`,
+    String(c.found), String(c.candidates), String(c.inconclusive), String(c.errors), String(c.unreadable), state
   ];
-  const rows = [['Run', 'Kind', 'd', 'Points', 'Saved/Planned', 'Found', 'Candidate', 'Inconcl.', 'Error', 'Unread.', 'State'],
-    ...summary.runs.map(r => [relative(summary.directory, r.directory) || '.', r.kind, String(r.dimension ?? '-'), String(r.points ?? '-'),
-      `${r.trials}/${r.expected ?? '?'}`, String(r.found), String(r.candidates), String(r.inconclusive), String(r.errors), String(r.unreadable), r.finished ? 'finished' : 'unfinished'])];
+  let offset = 0;
+  for (const group of summary.groups) {
+    for (const run of summary.runs.slice(offset, offset + group.runCount)) {
+      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, run.finished ? 'finished' : 'unfinished'));
+    }
+    offset += group.runCount;
+    if (group.runCount > 1) {
+      rows.push(row(`Subtotal (${group.runCount} runs)`, '-', group.dimension, group.points, group, group.expected, `${group.finishedRuns}/${group.runCount} finished`));
+    }
+    rows.push(Array(rows[0].length).fill(''));
+  }
+  const expected = summary.runs.some(r => r.expected === null) ? null : summary.runs.reduce((n, r) => n + r.expected!, 0);
+  rows.push(row('TOTAL', '-', null, null, t, expected, `${summary.runs.filter(r => r.finished).length}/${summary.runs.length} finished`));
   const widths = rows[0].map((_, i) => Math.max(...rows.map(row => row[i].length)));
   lines.push(...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));
   if (summary.warnings.length) lines.push('', ...summary.warnings.map(w => `Warning: ${w}`));
+  lines.push('', `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
+    `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${(t.searchMs / 1000).toFixed(1)}s.`);
   return lines.join('\n') + '\n';
 }

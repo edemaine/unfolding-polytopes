@@ -396,4 +396,48 @@ test('summary aggregates nested and unfinished runs without trusting stale total
   }
 });
 
+test('summary sorts numeric parameters, aggregates matching runs, and puts totals below groups', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-groups-'));
+  try {
+    const fixtures = [
+      {name: 'a-ten', dimension: 10, points: 8, planned: 2, status: 'no-unfolding'},
+      {name: 'b-twelve', dimension: 4, points: 12, planned: 2, status: 'found'},
+      {name: 'c-unknown', dimension: null, points: null, planned: null, status: 'found'},
+      {name: 'd-unknown-points', dimension: 4, points: null, planned: 2, status: 'found'},
+      {name: 'z-eight-b', dimension: 4, points: 8, planned: 4, status: 'inconclusive'},
+      {name: 'z-eight-a', dimension: 4, points: 8, planned: 3, status: 'found'}
+    ];
+    for (const f of fixtures) {
+      const run = join(directory, f.name);
+      mkdirSync(run);
+      writeFileSync(join(run, 'run.json'), JSON.stringify({trials: f.planned, generator: {dimension: f.dimension, count: f.points}}));
+      writeFileSync(join(run, 'trial-0.json'), JSON.stringify({result: {status: f.status, termination: f.status === 'inconclusive' ? 'maxNodes' : 'exhausted', stats: {elapsedMs: 10}}}));
+      if (f.name === 'z-eight-a') writeFileSync(join(run, 'summary.json'), '{}');
+    }
+    const report = summarizeResults(directory);
+    assert.deepEqual(report.runs.map(r => r.directory), ['z-eight-a', 'z-eight-b', 'b-twelve', 'd-unknown-points', 'a-ten', 'c-unknown'].map(name => join(directory, name)));
+    assert.equal(report.groups.length, 5);
+    assert.deepEqual(report.groups[0], {dimension: 4, points: 8, runCount: 2, finishedRuns: 1, expected: 7, remaining: 5,
+      trials: 2, found: 1, candidates: 0, inconclusive: 1, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 1, searchMs: 20});
+    assert.equal(report.totals.trials, 6);
+    assert.equal(report.totals.found, 4);
+    assert.equal(report.totals.candidates, 1);
+    const text = formatSummary(report);
+    const subtotal = text.indexOf('Subtotal (2 runs)');
+    assert.ok(subtotal > text.indexOf('z-eight-b') && subtotal < text.indexOf('b-twelve'));
+    assert.equal(text.match(/Subtotal/g)!.length, 1);
+    const total = text.split('\n').find(line => line.startsWith('TOTAL'))!;
+    assert.match(total, /6\/\?/);
+    assert.ok(text.indexOf('TOTAL') > text.indexOf('c-unknown'));
+    assert.ok(!formatSummary(summarizeResults(join(directory, 'z-eight-a'))).includes('Subtotal'));
+    const empty = join(directory, 'empty');
+    mkdirSync(empty);
+    assert.deepEqual(summarizeResults(empty).groups, []);
+    assert.match(formatSummary(summarizeResults(empty)), /TOTAL.*0\/0/);
+  } finally {
+    // Fresh mkdtemp directory owned by this test.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
 console.log(`${passed} test groups passed.`);
