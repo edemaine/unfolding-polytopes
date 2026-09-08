@@ -1,0 +1,399 @@
+"civet esCompat";
+import assert from 'node:assert/strict';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from '../src/index.civet';
+import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/linalg.civet';
+import type {Vector} from '../src/linalg.civet';
+import type {Placement, Polytope} from '../src/index.civet';
+import {formatSummary, summarizeResults} from '../src/summary.civet';
+
+let passed = 0;
+function test(name: string, run: () => void): void {
+  const start = performance.now();
+  run(); passed++;
+  console.log(`ok ${passed} - ${name} (${Math.round(performance.now() - start)}ms)`);
+}
+const close = (a: number, b: number, eps = 1e-7): void => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
+const near = (a: Vector, b: Vector): void => { assert.equal(a.length, b.length); a.forEach((x, i) => close(x, b[i])); };
+const cli = (args: string[]): ReturnType<typeof spawnSync> => spawnSync(process.execPath, ['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args], {encoding: 'utf8'});
+
+// Independent planar separating-axis test, for checking both LP and solver.
+function planarOverlap(a: Vector[], b: Vector[]): boolean {
+  const order = (p: Vector[]): Vector[] => {
+    const c = p[0].map((_, j) => p.reduce((s, v) => s + v[j] / p.length, 0));
+    return [...p].sort((x, y) => Math.atan2(x[1] - c[1], x[0] - c[0]) - Math.atan2(y[1] - c[1], y[0] - c[0]));
+  };
+  for (const polygon of [order(a), order(b)]) {
+    for (let i = 0; i < polygon.length; i++) {
+      const edge = sub(polygon[(i + 1) % polygon.length], polygon[i]);
+      const axis = mul([-edge[1], edge[0]], 1 / norm(edge));
+      const pa = a.map(p => dot(p, axis));
+      const pb = b.map(p => dot(p, axis));
+      if (Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb)) <= 1e-7) return false;
+    }
+  }
+  return true;
+}
+
+function body(points: Vector[]): Placement {
+  const d = points[0].length;
+  const min = points[0].map((_, j) => Math.min(...points.map(p => p[j])));
+  const max = points[0].map((_, j) => Math.max(...points.map(p => p[j])));
+  const poly = d >= 2 ? convexHull(points) : null;
+  const halfspaces = poly ? poly.facets.map(f => ({normal: f.normal, offset: f.offset * poly.scale + dot(f.normal, poly.center)})) : [{normal: [-1], offset: -min[0]}, {normal: [1], offset: max[0]}];
+  return {facet: 0, linear: [], translation: [], vertices: points.map((_, i) => i), coordinates: points, halfspaces, min, max};
+}
+
+function verify(poly: Polytope, tree: number[]): void {
+  const faces = developTree(poly, tree);
+  for (const face of faces) {
+    for (let i = 0; i < face.vertices.length; i++) {
+      for (let j = 0; j < i; j++) close(norm(sub(face.coordinates[i], face.coordinates[j])), norm(sub(poly.points[face.vertices[i]], poly.points[face.vertices[j]])));
+      for (const h of face.halfspaces) assert.ok(dot(h.normal, face.coordinates[i]) <= h.offset + 1e-7);
+    }
+    for (let i = 0; i < face.linear.length; i++) {
+      for (let j = 0; j < face.linear.length; j++) close(dot(face.linear[i], face.linear[j]), Number(i === j));
+    }
+  }
+  for (const id of tree) {
+    const ridge = poly.ridges[id];
+    const [a, b] = ridge.facets.map(f => faces[f]);
+    for (const v of ridge.vertices) near(mapPoint(a, poly.points[v]), mapPoint(b, poly.points[v]));
+    near(apply(a.linear, ridge.inward[0]), mul(apply(b.linear, ridge.inward[1]), -1));
+  }
+  if (poly.dimension === 3) {
+    for (let i = 0; i < faces.length; i++) {
+      for (let j = 0; j < i; j++) assert.equal(planarOverlap(faces[i].coordinates, faces[j].coordinates), false);
+    }
+  }
+}
+
+test('hull combinatorics in dimensions 2 through 6', () => {
+  for (let d = 2; d <= 6; d++) {
+    const p = convexHull(simplex(d));
+    assert.equal(p.facets.length, d + 1);
+    assert.equal(p.ridges.length, d * (d + 1) / 2);
+    assert.ok(p.facets.every(f => f.vertices.length === d));
+  }
+  for (let d = 2; d <= 4; d++) {
+    const cube = convexHull(hypercube(d));
+    assert.equal(cube.facets.length, 2 * d);
+    assert.equal(cube.ridges.length, 2 * d * (d - 1));
+    assert.ok(cube.facets.every(f => f.vertices.length === 2 ** (d - 1)));
+    assert.ok(cube.ridges.every(r => r.vertices.length === 2 ** (d - 2)));
+    const cross = convexHull(crossPolytope(d));
+    assert.equal(cross.facets.length, 2 ** d);
+    assert.equal(cross.ridges.length, d * 2 ** (d - 1));
+  }
+});
+
+test('redundant points, translations, rescaling, and invalid input', () => {
+  const points = hypercube(3);
+  const extra = [...points, [0, 0, 0], [...points[0]], [1, 0, 0], [1, 1, 0]];
+  const p = convexHull(extra);
+  assert.equal(p.facets.length, 6); assert.equal(p.ridges.length, 12);
+  for (const scale of [1e-8, 1, 1e8]) {
+    const transformed = convexHull(points.map(p => p.map((x, j) => scale * (x + 10 * j))));
+    assert.equal(transformed.facets.length, 6);
+    assert.equal(solve(transformed).status, 'found');
+  }
+  assert.throws(() => convexHull([[0, 0], [1, 0], [2, 0]]), /full dimensional/);
+  assert.throws(() => convexHull([[0, 0], [1, 0], [NaN, 1]]), /finite/);
+  assert.throws(() => convexHull([[0, 0], [1, 0], [0, 1, 2]]), /common dimension/);
+  assert.throws(() => convexHull(simplex(3), {maxCombinations: 1}), /budget exceeded/);
+  assert.throws(() => convexHull(simplex(3), {tolerance: 0}), /Tolerance/);
+});
+
+test('interior intersection: crossing, containment, contact, disjoint, dimensions 1–4', () => {
+  const horizontal = body([[-4, -.1], [-4, .1], [4, -.1], [4, .1]]);
+  const vertical = body([[1.9, -1], [2.1, -1], [1.9, 5], [2.1, 5]]);
+  assert.equal(interiorOverlap(horizontal, vertical, 1e-8), true);
+  for (let d = 1; d <= 4; d++) {
+    const vertices = d === 1 ? [[-1], [1]] : hypercube(d);
+    const a = body(vertices);
+    assert.equal(interiorOverlap(a, a, 1e-8), true);
+    assert.equal(interiorOverlap(a, body(vertices.map(p => mul(p, .1))), 1e-8), true);
+    for (const shift of [2, 3]) assert.equal(interiorOverlap(a, body(vertices.map(p => p.map((x, j) => x + (j === 0 ? shift : 0)))), 1e-8), false);
+    assert.equal(interiorOverlap(a, body(vertices.map(p => p.map(x => x + 2))), 1e-8), false);
+    assert.equal(interiorOverlap(a, body(vertices.map(p => p.map((x, j) => x + (j === 0 ? 1.9 : 0)))), 1e-8), true);
+  }
+  // Bounding boxes overlap, but the two triangles only share a diagonal.
+  assert.equal(interiorOverlap(body([[0, 0], [1, 0], [0, 1]]), body([[1, 1], [1, 0], [0, 1]]), 1e-8), false);
+});
+
+test('LP intersection agrees with independent planar SAT', () => {
+  for (let seed = 0; seed < 100; seed++) {
+    const a = randomPoints(2, 5, seed, 'sphere');
+    const b = randomPoints(2, 5, seed + 100, 'sphere').map(p => [p[0] + (seed % 8) / 4, p[1] + (seed % 3) / 5]);
+    assert.equal(interiorOverlap(body(a), body(b), 1e-8), planarOverlap(a, b), `seed ${seed}`);
+  }
+});
+
+test('isometric development and opposite hinge sides in dimensions 2–6', () => {
+  for (let d = 2; d <= 6; d++) {
+    for (const points of [simplex(d), randomPoints(d, d + 2, d, 'gaussian')]) {
+      const p = convexHull(points);
+      const result = solve(p, {maxNodes: 100_000, timeoutMs: 20_000});
+      assert.equal(result.status, 'found', `dimension ${d}`);
+      verify(p, result.tree!);
+    }
+  }
+  for (const points of [hypercube(3), hypercube(4), prism(simplex(3)), pyramid(hypercube(3))]) {
+    const p = convexHull(points);
+    const result = solve(p);
+    assert.equal(result.status, 'found'); verify(p, result.tree!);
+  }
+});
+
+test('enumeration counts: polygon cycles, Cayley simplex counts, and cube 384', () => {
+  for (const n of [3, 4, 7]) {
+    const p = convexHull(Array.from({length: n}, (_, i) => [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)]));
+    const result = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
+    assert.equal(result.stats.completeTrees, n); assert.equal(result.stats.solutions, n);
+  }
+  for (const d of [3, 4]) {
+    const p = convexHull(simplex(d));
+    const result = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
+    assert.equal(result.stats.completeTrees, (d + 1) ** (d - 1));
+    assert.equal(result.termination, 'exhausted');
+  }
+  const cube = solve(convexHull(hypercube(3)), {stopAfterFirst: false, pruneOverlaps: false});
+  assert.equal(cube.stats.completeTrees, 384);
+});
+
+test('pruning preserves solution counts; independent edge-subset enumeration', () => {
+  let prunes = 0;
+  for (const seed of [0, 4, 6]) {
+    const p = convexHull(randomPoints(3, 6, seed, 'gaussian').map(p => [p[0], p[1], p[2] * .05]));
+    const all = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
+    const pruned = solve(p, {stopAfterFirst: false});
+    assert.equal(pruned.stats.solutions, all.stats.solutions);
+    prunes += pruned.stats.overlapPrunes;
+    let count = 0;
+    let nonoverlapping = 0;
+    for (const ids of combinations(p.ridges.length, p.facets.length - 1)) {
+      let faces: Placement[];
+      try { faces = developTree(p, ids); } catch { continue; }
+      count++;
+      let overlap = false;
+      for (let i = 0; i < faces.length; i++) {
+        for (let j = 0; j < i; j++) if (planarOverlap(faces[i].coordinates, faces[j].coordinates)) overlap = true;
+      }
+      if (!overlap) nonoverlapping++;
+    }
+    assert.equal(all.stats.completeTrees, count);
+    assert.equal(all.stats.solutions, nonoverlapping);
+    assert.equal(solve(p, {root: p.facets.length - 1, stopAfterFirst: false}).stats.solutions, nonoverlapping);
+  }
+  assert.ok(prunes > 0, 'Must exercise actual overlapping branches.');
+});
+
+test('limits are inconclusive; malformed trees/options fail explicitly', () => {
+  const p = convexHull(simplex(3));
+  for (const options of [{maxNodes: 0}, {maxNodes: 1}, {timeoutMs: 0}]) {
+    const result = solve(p, options);
+    assert.equal(result.status, 'inconclusive'); assert.equal(result.exhaustive, false);
+    assert.equal(result.tree, null);
+  }
+  const partial = solve(p, {maxNodes: 5, stopAfterFirst: false});
+  assert.equal(partial.status, 'found'); assert.equal(partial.exhaustive, false);
+  assert.throws(() => solve(p, {root: -1}), /root/);
+  assert.throws(() => solve(p, {maxNodes: -1}), /maxNodes/);
+  assert.throws(() => solve(p, {overlapTolerance: NaN}), /overlapTolerance/);
+  assert.throws(() => developTree(p, [0, 0, 0]), /distinct/);
+  assert.throws(() => developTree(p, [0]), /distinct/);
+  assert.throws(() => developTree(p, [0, 1, 3]), /spanning tree/);
+  assert.throws(() => attachFacet(p, rootPlacement(p), 999), /Ridge/);
+});
+
+test('generators are reproducible and produce expected dimensions', () => {
+  for (const distribution of ['sphere', 'ball', 'box', 'gaussian'] as const) {
+    const a = randomPoints(4, 9, 42, distribution);
+    assert.deepEqual(a, randomPoints(4, 9, 42, distribution));
+    assert.notDeepEqual(a, randomPoints(4, 9, 43, distribution));
+    assert.equal(affineBasis(a, 1e-9).length, 4);
+    if (distribution === 'sphere') a.forEach(p => close(norm(p), 1));
+    if (distribution === 'ball') a.forEach(p => assert.ok(norm(p) <= 1));
+  }
+  assert.equal(convexHull(cyclic(4, 7)).facets.length, 14);
+  assert.equal(convexHull(hypersimplex(3, 2)).facets.length, 8);
+  assert.equal(convexHull(product(simplex(2), simplex(2))).facets.length, 6);
+  assert.throws(() => randomPoints(3, 3), /count/);
+  assert.throws(() => simplex(1), /Dimension/);
+});
+
+test('CLI generation, file solve, saved batches, cutoff and argument errors', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-test-'));
+  try {
+    const input = join(directory, 'cube.json');
+    const generated = cli(['generate', '--family', 'cube', '--dimension', '3', '--output', input]);
+    assert.equal(generated.status, 0, String(generated.stderr));
+    assert.equal(JSON.parse(readFileSync(input, 'utf8')).points.length, 8);
+    const solved = cli(['solve', input]);
+    assert.equal(solved.status, 0, String(solved.stderr));
+    assert.equal(JSON.parse(String(solved.stdout)).result.status, 'found');
+    const limited = cli(['solve', input, '--max-nodes=0']);
+    assert.equal(JSON.parse(String(limited.stdout)).result.status, 'inconclusive');
+    const batch = cli(['search', '--dimension', '3', '--points', '5', '--seed', '17', '--trials', '2', '--output', directory]);
+    assert.equal(batch.status, 0, String(batch.stderr));
+    const run = join(directory, readdirSync(directory).find(p => p.startsWith('run-'))!);
+    const summary = JSON.parse(readFileSync(join(run, 'summary.json'), 'utf8'));
+    assert.equal(summary.found, 2); assert.equal(summary.candidates, 0);
+    const saved = JSON.parse(readFileSync(join(run, 'trial-000000-seed-17.json'), 'utf8'));
+    assert.deepEqual(saved.points, randomPoints(3, 5, 17));
+    assert.equal(saved.hullOptions.maxCombinations, 'Infinity');
+    assert.equal(saved.solveOptions.maxNodes, 'Infinity');
+    assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
+    assert.equal(cli(['solve', '--typo', '1']).status, 1);
+    assert.equal(cli(['generate', '--dimension', '2.5']).status, 1);
+  } finally {
+    // The directory is freshly created by mkdtemp inside the system temp dir.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('retry selects inconclusive files, preserves settings, resets limits, and supports repeated retries', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-test-'));
+  try {
+    const source = join(directory, 'source');
+    mkdirSync(source);
+    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune']);
+    assert.equal(cutoff.status, 0, String(cutoff.stderr));
+    const original = JSON.parse(String(cutoff.stdout));
+    assert.equal(original.result.status, 'inconclusive');
+    const name = 'trial-000123-seed-0.json';
+    writeFileSync(join(source, name), String(cutoff.stdout));
+    // Other statuses must be ignored, without needing their point arrays.
+    writeFileSync(join(source, 'trial-found.json'), JSON.stringify({result: {status: 'found'}}));
+    writeFileSync(join(source, 'trial-candidate.json'), JSON.stringify({result: {status: 'no-unfolding'}}));
+    writeFileSync(join(source, 'trial-error.json'), JSON.stringify({error: 'previous hull failure'}));
+    writeFileSync(join(source, 'trials.jsonl'), '{interrupted journal');
+    const before = readdirSync(source).map(name => [name, readFileSync(join(source, name), 'utf8')]);
+
+    const retry = cli(['retry', source]);
+    assert.equal(retry.status, 0, String(retry.stderr));
+    const lines = String(retry.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].status, 'found');
+    assert.equal(lines[0].sourceFile, join(source, name));
+    const run = join(directory, readdirSync(directory).find(name => name.startsWith('retry-'))!);
+    assert.ok(String(retry.stderr).trim().endsWith(`Results saved to ${run}`));
+    const saved = JSON.parse(readFileSync(join(run, name), 'utf8'));
+    assert.deepEqual(saved.points, original.points);
+    assert.deepEqual(saved.generator, original.generator);
+    assert.equal(saved.hullOptions.maxCombinations, 'Infinity');
+    assert.equal(saved.solveOptions.maxNodes, 'Infinity');
+    assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
+    assert.equal(saved.hullOptions.tolerance, 1e-8);
+    assert.equal(saved.solveOptions.overlapTolerance, 1e-7);
+    assert.equal(saved.solveOptions.root, 1);
+    assert.equal(saved.solveOptions.stopAfterFirst, false);
+    assert.equal(saved.solveOptions.pruneOverlaps, false);
+    assert.equal(saved.result.exhaustive, true);
+    assert.equal(saved.result.stats.completeTrees, 16);
+    assert.deepEqual(readdirSync(source).map(name => [name, readFileSync(join(source, name), 'utf8')]), before);
+
+    const emptyOutput = join(directory, 'empty');
+    const empty = cli(['retry', run, '--output', emptyOutput]);
+    assert.equal(empty.status, 0, String(empty.stderr));
+    assert.match(String(empty.stderr), /No inconclusive trials/);
+    assert.equal(existsSync(emptyOutput), false);
+    const limitedOutput = join(directory, 'limited');
+    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--output', limitedOutput]);
+    assert.equal(limited.status, 0, String(limited.stderr));
+    const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
+    const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
+    assert.equal(limitedSaved.result.status, 'inconclusive');
+    assert.equal(limitedSaved.solveOptions.maxNodes, 0);
+    assert.equal(limitedSaved.hullOptions.tolerance, 1e-10);
+    assert.equal(limitedSaved.solveOptions.overlapTolerance, 1e-9);
+    assert.equal(limitedSaved.solveOptions.root, 0);
+    const again = cli(['retry', limitedRun]);
+    assert.equal(again.status, 0, String(again.stderr));
+    assert.equal(JSON.parse(String(again.stdout)).status, 'found');
+    const combinedOutput = join(directory, 'combined');
+    const combined = cli(['retry', source, limitedRun, source + '/.', run, '--max-nodes', '0', '--output', combinedOutput]);
+    assert.equal(combined.status, 0, String(combined.stderr));
+    const combinedRows = String(combined.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(combinedRows.length, 2, 'Duplicate directories and successful trials must not be retried.');
+    assert.equal(new Set(combinedRows.map(row => row.file)).size, 2, 'Same source filenames must not collide.');
+    assert.deepEqual(combinedRows.map(row => row.sourceFile), [join(source, name), join(limitedRun, name)]);
+    const combinedRun = join(combinedOutput, readdirSync(combinedOutput)[0]);
+    const combinedMetadata = JSON.parse(readFileSync(join(combinedRun, 'run.json'), 'utf8'));
+    assert.deepEqual(combinedMetadata.sourceDirectories, [source, limitedRun, run]);
+    const combinedSaved = combinedRows.map(row => JSON.parse(readFileSync(join(combinedRun, row.file), 'utf8')));
+    assert.deepEqual(combinedSaved.map(saved => saved.hullOptions.tolerance), [1e-8, 1e-10]);
+    assert.ok(combinedSaved.every(saved => saved.result.status === 'inconclusive'));
+    assert.deepEqual(combinedSaved.map(saved => saved.points), [original.points, original.points]);
+    const combinedAgain = cli(['retry', combinedRun]);
+    assert.equal(combinedAgain.status, 0, String(combinedAgain.stderr));
+    assert.ok(String(combinedAgain.stdout).trim().split('\n').map(line => JSON.parse(line)).every(row => row.status === 'found'));
+    assert.deepEqual(readdirSync(source).map(name => [name, readFileSync(join(source, name), 'utf8')]), before);
+    const invalidOutput = join(directory, 'invalid');
+    assert.equal(cli(['retry', source, join(directory, 'missing'), '--output', invalidOutput]).status, 1);
+    assert.equal(existsSync(invalidOutput), false);
+    assert.equal(cli(['retry']).status, 1);
+    assert.equal(cli(['retry', source, '--seed', '0']).status, 1);
+    assert.equal(cli(['retry', join(directory, 'missing')]).status, 1);
+  } finally {
+    // Fresh mkdtemp directory owned by this test.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('summary aggregates nested and unfinished runs without trusting stale totals', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-test-'));
+  const write = (path: string, value: unknown): void => writeFileSync(path, JSON.stringify(value));
+  try {
+    const a = join(directory, 'run-a');
+    const b = join(directory, 'nested', 'retry-b');
+    const c = join(directory, 'run-empty');
+    for (const path of [a, b, c]) mkdirSync(path, {recursive: true});
+    write(join(a, 'run.json'), {trials: 5, generator: {dimension: 4, count: 8}});
+    write(join(a, 'summary.json'), {found: 999});
+    write(join(a, 'trial-a.json'), {result: {status: 'found'}});
+    write(join(a, 'trial-b.json'), {result: {status: 'inconclusive', termination: 'timeout', stats: {elapsedMs: 10}}});
+    write(join(a, 'trial-c.json'), {result: {status: 'no-unfolding', stats: {elapsedMs: 20}}});
+    write(join(a, 'trial-d.json'), {error: 'hull failed'});
+    writeFileSync(join(a, 'trial-e.json'), '{incomplete');
+    const row = {file: 'trial-a.json', status: 'found', elapsedMs: 5};
+    writeFileSync(join(a, 'trials.jsonl'), [JSON.stringify(row), JSON.stringify(row), JSON.stringify({...row, file: 'trial-not-saved.json'}), '{incomplete'].join('\n'));
+    write(join(b, 'run.json'), {command: 'retry', trials: 2, sourceDirectory: a});
+    write(join(b, 'trial-b.json'), {sourceFile: join(a, 'trial-b.json'), result: {status: 'found', stats: {elapsedMs: 30}}});
+    write(join(c, 'run.json'), {trials: 3});
+    const report = summarizeResults(directory);
+    assert.equal(report.runs.length, 3);
+    assert.deepEqual(report.totals, {trials: 6, found: 2, candidates: 1, inconclusive: 1, errors: 1, unreadable: 1, timeouts: 1, nodeLimits: 0, searchMs: 65});
+    assert.equal(report.runs.find(r => r.directory === a)!.dimension, 4);
+    assert.equal(report.runs.find(r => r.directory === a)!.finished, true);
+    assert.equal(report.runs.find(r => r.directory === b)!.remaining, 1);
+    assert.equal(report.runs.find(r => r.directory === b)!.finished, false);
+    assert.equal(report.runs.find(r => r.directory === c)!.trials, 0);
+    assert.equal(report.warnings.length, 2);
+    assert.equal(summarizeResults(b).totals.trials, 1);
+    assert.match(formatSummary(report), /6 saved attempts \(retries counted separately\)/);
+    const text = cli(['summary', directory]);
+    assert.equal(text.status, 0, String(text.stderr));
+    assert.equal(String(text.stdout), formatSummary(report));
+    const json = cli(['summary', directory, '--json']);
+    assert.equal(json.status, 0, String(json.stderr));
+    assert.deepEqual(JSON.parse(String(json.stdout)), report);
+    const output = join(directory, 'report.json');
+    const exported = cli(['summary', directory, '--json', '--output', output]);
+    assert.equal(exported.status, 0, String(exported.stderr));
+    assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')), report);
+    const empty = join(directory, 'empty');
+    mkdirSync(empty);
+    assert.equal(summarizeResults(empty).runs.length, 0);
+    assert.equal(cli(['summary', directory, '--max-nodes', '0']).status, 1);
+    assert.equal(cli(['summary', join(directory, 'missing')]).status, 1);
+  } finally {
+    // Fresh mkdtemp directory owned by this test.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+console.log(`${passed} test groups passed.`);

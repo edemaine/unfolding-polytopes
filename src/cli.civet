@@ -1,0 +1,258 @@
+"civet esCompat";
+import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
+import {dirname, join, resolve} from 'node:path';
+import {convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
+import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
+import type {Vector} from './linalg.civet';
+import {formatSummary, summarizeResults} from './summary.civet';
+
+const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary> [input.json|directory] [options]
+
+generate  Write {points, generator} JSON, to stdout or --output FILE.
+solve     Read points from input.json, or generate them with the options below.
+search    Search successive random seeds; save every trial in a new run directory.
+retry     Rerun inconclusive trials from one or more directories into one new run.
+          Usage: retry DIRECTORY [DIRECTORY ...] [options]
+          Default output parent is the first directory's parent.
+          Reuse saved points and settings; reset all work limits to Infinity.
+          Explicit solver/geometry options override saved settings.
+summary   Summarize runs recursively in a directory (default results).
+
+Generation options:
+  --family NAME        random (default), simplex, cube, cross, cyclic, hypersimplex
+  --dimension N        Ambient dimension >= 2 (default 4)
+  --points N           Number of random/cyclic points (default dimension+3)
+  --seed N             Integer seed (default 0; search increments it per trial)
+  --distribution NAME  sphere (default), ball, gaussian, box
+  --weight N           Hypersimplex weight in dimension+1 coordinates (default 2)
+  --scales X,Y,...     Positive axis scale factors (default all 1)
+
+Geometry and solver options:
+  --tolerance X        Hull tolerance after normalization (default 1e-9)
+  --overlap-tolerance X  Interior margin in normalized units (default 16*tolerance)
+  --max-hull-combinations N  Hull work limit (default Infinity)
+  --max-nodes N        Tree search work limit (default Infinity)
+  --timeout-ms N       Per-polytope tree search time (default Infinity)
+  --root N             Root facet index (default 0)
+  --all                Count all nonoverlapping trees instead of stopping at first
+  --no-prune           Check overlap only on complete trees (for cross-checking)
+
+Output and search options:
+  --output PATH        File for generate/solve/summary; parent directory for search/retry
+  --json               Machine-readable summary instead of a text table
+  --trials N           Number of random polytopes in search (default 100)
+  --help               Show this help
+
+Input: a coordinate array, {points: [...]}, or a previous solve/search result.
+Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (limit).
+Boundary contact is permitted. Floating-point results are not certified proofs.
+Timeout covers tree search; hull construction has a separate combination limit.`;
+
+const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'overlap-tolerance', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
+const switches = new Set(['help', 'all', 'no-prune', 'json']);
+
+function main(args: string[]): void {
+  const flags = new Map<string, string>();
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) { positional.push(arg); continue; }
+    const [name, inline] = arg.slice(2).split(/=(.*)/s);
+    if (!values.has(name) && !switches.has(name)) throw new Error(`Unknown option --${name}`);
+    if (flags.has(name)) throw new Error(`Duplicate option --${name}`);
+    if (switches.has(name)) {
+      if (inline !== undefined) throw new Error(`--${name} does not take a value.`);
+      flags.set(name, 'true');
+    } else {
+      const value = inline ?? args[++i];
+      if (!value || value.startsWith('--')) throw new Error(`Missing value for --${name}`);
+      flags.set(name, value);
+    }
+  }
+  if (flags.has('help') || !positional.length) { console.log(help); return; }
+  const [command, file] = positional;
+  if (!['generate', 'solve', 'search', 'retry', 'summary'].includes(command) || positional.length > (command === 'retry' ? Infinity : ['solve', 'summary'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
+  if (command === 'summary') {
+    for (const name of flags.keys()) if (!['json', 'output'].includes(name)) throw new Error(`--${name} does not apply to summary.`);
+    const summary = summarizeResults(file ?? 'results');
+    const text = flags.has('json') ? JSON.stringify(summary, null, 2) + '\n' : formatSummary(summary);
+    if (flags.has('output')) { writeFileSync(flags.get('output')!, text); }
+    else { process.stdout.write(text); }
+    return;
+  }
+  if (flags.has('json')) throw new Error('--json only applies to summary.');
+  if (command === 'retry') {
+    if (!file) throw new Error('retry requires a saved run directory.');
+    for (const name of ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'trials']) {
+      if (flags.has(name)) throw new Error(`--${name} does not apply to retry; it reuses saved points.`);
+    }
+  }
+  const number = (name: string, fallback: number): number => {
+    const value = flags.has(name) ? Number(flags.get(name)) : fallback;
+    if (Number.isNaN(value)) throw new Error(`--${name} must be a number.`);
+    return value;
+  };
+  const integer = (name: string, fallback: number, min: number): number => {
+    const value = number(name, fallback);
+    if (!Number.isSafeInteger(value) || value < min) throw new Error(`--${name} must be a safe integer >= ${min}.`);
+    return value;
+  };
+  const limit = (name: string, fallback: number, integral = true): number => {
+    const value = number(name, fallback);
+    if (!(value >= 0) || (integral && value !== Infinity && !Number.isSafeInteger(value))) throw new Error(`Invalid --${name} limit.`);
+    return value;
+  };
+  const d = integer('dimension', 4, 2);
+  const count = integer('points', d + 3, d + 1);
+  const seed = integer('seed', 0, Number.MIN_SAFE_INTEGER);
+  const family = flags.get('family') ?? 'random';
+  const distribution = (flags.get('distribution') ?? 'sphere') as Distribution;
+  const weight = integer('weight', 2, 1);
+  const scales = flags.has('scales') ? flags.get('scales')!.split(',').map(Number) : Array(d).fill(1);
+  if (scales.length !== d || scales.some(x => !(x > 0 && Number.isFinite(x)))) throw new Error('--scales needs one positive finite factor per dimension.');
+  const generate = (currentSeed: number): {points: Vector[]; generator: object} => {
+    let points: Vector[];
+    if (family === 'random') { points = randomPoints(d, count, currentSeed, distribution); }
+    else if (family === 'simplex') { points = simplex(d); }
+    else if (family === 'cube') { points = hypercube(d); }
+    else if (family === 'cross') { points = crossPolytope(d); }
+    else if (family === 'cyclic') { points = cyclic(d, count); }
+    else if (family === 'hypersimplex') { points = hypersimplex(d, weight); }
+    else { throw new Error(`Unknown family: ${family}`); }
+    return {points: points.map(p => p.map((x, j) => x * scales[j])), generator: {family, dimension: d, count: points.length, seed: currentSeed, distribution, weight, scales}};
+  };
+  const json = (value: unknown): string => JSON.stringify(value, (_, v) => v === Infinity ? 'Infinity' : v, 2) + '\n';
+  const output = (value: unknown): void => {
+    if (flags.has('output')) { writeFileSync(flags.get('output')!, json(value)); }
+    else { process.stdout.write(json(value)); }
+  };
+  if (command === 'generate') { output(generate(seed)); return; }
+  const hullOptions: HullOptions = {tolerance: number('tolerance', 1e-9), maxCombinations: limit('max-hull-combinations', Infinity)};
+  if (!(hullOptions.tolerance! > 0 && hullOptions.tolerance! < .01)) throw new Error('--tolerance must be between 0 and 0.01.');
+  const solveOptions: SolveOptions = {
+    root: integer('root', 0, 0), maxNodes: limit('max-nodes', Infinity),
+    timeoutMs: limit('timeout-ms', Infinity, false),
+    overlapTolerance: flags.has('overlap-tolerance') ? number('overlap-tolerance', 0) : undefined,
+    stopAfterFirst: !flags.has('all'), pruneOverlaps: !flags.has('no-prune')
+  };
+  if (solveOptions.overlapTolerance !== undefined && !(solveOptions.overlapTolerance > 0 && Number.isFinite(solveOptions.overlapTolerance))) throw new Error('--overlap-tolerance must be positive and finite.');
+  const document = (input: {points: Vector[]; generator?: unknown}, poly: Polytope, result: SolveResult, usedHull = hullOptions, usedSolve = solveOptions): object => ({
+    formatVersion: 1, points: input.points, generator: input.generator, hullOptions: usedHull, solveOptions: usedSolve,
+    polytope: {
+      dimension: poly.dimension, center: poly.center, scale: poly.scale, tolerance: poly.tolerance,
+      hullCombinations: poly.hullCombinations,
+      facets: poly.facets.map(f => f.vertices),
+      ridges: poly.ridges.map(r => ({facets: r.facets, vertices: r.vertices}))
+    },
+    result
+  });
+  if (command === 'solve') {
+    const raw = file ? JSON.parse(readFileSync(file, 'utf8')) : generate(seed);
+    const input = Array.isArray(raw) ? {points: raw} : raw;
+    const poly = convexHull(input?.points, hullOptions);
+    output(document(input, poly, solve(poly, solveOptions)));
+    return;
+  }
+  interface Trial {
+    input: {points: Vector[]; generator?: unknown};
+    name: string;
+    seed?: number;
+    sourceFile?: string;
+    hullOptions: HullOptions;
+    solveOptions: SolveOptions;
+  }
+  let jobs: Iterable<Trial>;
+  let metadata: object;
+  if (command === 'retry') {
+    const sourceDirectories = [...new Map(positional.slice(1).map(path => {
+      const full = realpathSync(path);
+      return [process.platform === 'win32' ? full.toLowerCase() : full, full] as const;
+    })).values()];
+    const selected: Trial[] = [];
+    // Snapshot trial files, not the journal: an interrupted run may have saved
+    // its final trial before appending the corresponding journal entry.
+    for (const sourceDirectory of sourceDirectories) {
+      for (const entry of readdirSync(sourceDirectory, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
+        if (!entry.isFile() || !/^trial-.*\.json$/.test(entry.name)) continue;
+        const sourceFile = join(sourceDirectory, entry.name);
+        let saved;
+        try { saved = JSON.parse(readFileSync(sourceFile, 'utf8')); } catch (error) {
+          throw new Error(`Cannot read trial ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (saved?.result?.status !== 'inconclusive') continue;
+        const usedHull: HullOptions = {
+          tolerance: flags.has('tolerance') ? hullOptions.tolerance : saved.hullOptions?.tolerance ?? saved.polytope?.tolerance ?? hullOptions.tolerance,
+          maxCombinations: hullOptions.maxCombinations
+        };
+        const usedSolve: SolveOptions = {
+          ...solveOptions,
+          root: flags.has('root') ? solveOptions.root : saved.solveOptions?.root ?? solveOptions.root,
+          overlapTolerance: flags.has('overlap-tolerance') ? solveOptions.overlapTolerance : saved.solveOptions?.overlapTolerance ?? saved.result.overlapTolerance,
+          stopAfterFirst: flags.has('all') ? false : saved.solveOptions?.stopAfterFirst ?? true,
+          pruneOverlaps: flags.has('no-prune') ? false : saved.solveOptions?.pruneOverlaps ?? true
+        };
+        // Different runs often reuse trial filenames and seeds. Number combined
+        // retries globally; sourceFile retains the original path and filename.
+        const name = sourceDirectories.length === 1 ? entry.name : `trial-${String(selected.length).padStart(6, '0')}.json`;
+        selected.push({input: {points: saved.points, generator: saved.generator}, name,
+          seed: saved.generator?.seed, sourceFile, hullOptions: usedHull, solveOptions: usedSolve});
+      }
+    }
+    if (!selected.length) { console.error(`No inconclusive trials in ${sourceDirectories.join(', ')}`); return; }
+    console.error(`Retrying ${selected.length} inconclusive trials from ${sourceDirectories.join(', ')}`);
+    jobs = selected;
+    metadata = {command, sourceDirectory: sourceDirectories.length === 1 ? sourceDirectories[0] : undefined,
+      sourceDirectories, trials: selected.length, sourceFiles: selected.map(t => t.sourceFile), overrides: Object.fromEntries(flags)};
+  } else {
+    if (family !== 'random') throw new Error('search uses random polytopes; use solve for a fixed family.');
+    const trials = integer('trials', 100, 1);
+    if (!Number.isSafeInteger(seed + trials - 1)) throw new Error('Seed range exceeds safe integers.');
+    const firstInput = generate(seed);
+    jobs = (function* (): Generator<Trial> {
+      for (let i = 0; i < trials; i++) {
+        yield {input: i === 0 ? firstInput : generate(seed + i), seed: seed + i,
+          name: `trial-${String(i).padStart(6, '0')}-seed-${seed + i}.json`, hullOptions, solveOptions};
+      }
+    })();
+    metadata = {command, trials, seed, generator: firstInput.generator, hullOptions, solveOptions};
+  }
+  const parent = flags.get('output') ?? (command === 'retry' ? dirname(resolve(file!)) : 'results');
+  mkdirSync(parent, {recursive: true});
+  const directory = mkdtempSync(join(parent, command === 'retry' ? 'retry-' : 'run-'));
+  writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+  console.error(`Saving trials to ${directory}`);
+  const totals = {found: 0, candidates: 0, inconclusive: 0, errors: 0};
+  let i = 0;
+  for (const job of jobs) {
+    const {input, name, sourceFile, hullOptions: usedHull, solveOptions: usedSolve} = job;
+    const provenance = {trial: i++, seed: job.seed, sourceFile};
+    let record: object;
+    let summary: object;
+    try {
+      const poly = convexHull(input.points, usedHull);
+      const result = solve(poly, usedSolve);
+      if (result.status === 'found') { totals.found++; }
+      else if (result.status === 'no-unfolding') { totals.candidates++; }
+      else { totals.inconclusive++; }
+      record = {...document(input, poly, result, usedHull, usedSolve), sourceFile};
+      summary = {...provenance, status: result.status, termination: result.termination, facets: poly.facets.length, ridges: poly.ridges.length, ...result.stats};
+    } catch (error) {
+      totals.errors++;
+      const message = error instanceof Error ? error.message : String(error);
+      record = {formatVersion: 1, ...input, sourceFile, hullOptions: usedHull, solveOptions: usedSolve, error: message};
+      summary = {...provenance, status: 'error', error: message};
+    }
+    writeFileSync(join(directory, name), json(record), {flag: 'wx'});
+    const line = JSON.stringify({...summary, file: name});
+    appendFileSync(join(directory, 'trials.jsonl'), line + '\n');
+    console.log(line);
+  }
+  writeFileSync(join(directory, 'summary.json'), json(totals));
+  console.error(JSON.stringify(totals));
+  console.error(`Results saved to ${directory}`);
+}
+
+try { main(process.argv.slice(2)); } catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}

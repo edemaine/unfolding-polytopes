@@ -1,0 +1,129 @@
+"civet esCompat";
+import {readFileSync, readdirSync} from 'node:fs';
+import {join, relative, resolve} from 'node:path';
+
+export interface Counts {
+  trials: number;
+  found: number;
+  candidates: number;
+  inconclusive: number;
+  errors: number;
+  unreadable: number;
+  timeouts: number;
+  nodeLimits: number;
+  searchMs: number;
+}
+
+export interface RunSummary extends Counts {
+  directory: string;
+  kind: string;
+  dimension: number | null;
+  points: number | null;
+  expected: number | null;
+  remaining: number | null;
+  finished: boolean;
+}
+
+export interface ResultsSummary {
+  directory: string;
+  runs: RunSummary[];
+  totals: Counts;
+  warnings: string[];
+}
+
+const counts = (): Counts => ({trials: 0, found: 0, candidates: 0, inconclusive: 0, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 0, searchMs: 0});
+const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+const statusKeys = new Map<string, 'found' | 'candidates' | 'inconclusive' | 'errors'>([
+  ['found', 'found'], ['no-unfolding', 'candidates'], ['inconclusive', 'inconclusive'], ['error', 'errors']
+]);
+
+// Count saved attempts, including retries separately. Journals avoid parsing
+// large coordinate files, but only rows with an existing trial file count.
+export function summarizeResults(path = 'results'): ResultsSummary {
+  const directory = resolve(path);
+  const result: ResultsSummary = {directory, runs: [], totals: counts(), warnings: []};
+  function scan(current: string): void {
+    const entries = readdirSync(current, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1);
+    const files = new Set(entries.filter(e => e.isFile()).map(e => e.name));
+    const trials = [...files].filter(name => /^trial-.*\.json$/.test(name));
+    if (files.has('run.json') || trials.length) {
+      let metadata: any = {};
+      if (files.has('run.json')) {
+        try { metadata = JSON.parse(readFileSync(join(current, 'run.json'), 'utf8')) ?? {}; } catch {
+          result.warnings.push(`Cannot parse ${join(current, 'run.json')}`);
+        }
+      }
+      const expected = Number.isSafeInteger(metadata.trials) && metadata.trials >= 0 ? metadata.trials : null;
+      const run: RunSummary = {
+        ...counts(), directory: current, kind: metadata.command ?? (metadata.sourceDirectory ? 'retry' : 'search'),
+        dimension: nonnegative(metadata.generator?.dimension) ? metadata.generator.dimension : null,
+        points: nonnegative(metadata.generator?.count) ? metadata.generator.count : null,
+        expected, remaining: expected === null ? null : Math.max(0, expected - trials.length),
+        finished: files.has('summary.json')
+      };
+      const journal = new Map<string, any>();
+      if (files.has('trials.jsonl')) {
+        let invalid = 0;
+        for (const line of readFileSync(join(current, 'trials.jsonl'), 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const row = JSON.parse(line);
+            if (typeof row?.file !== 'string' || !statusKeys.has(row.status)) { invalid++; continue; }
+            // Repeated rows describe the same saved attempt; keep the last.
+            journal.set(row.file, row);
+          } catch { invalid++; }
+        }
+        if (invalid) result.warnings.push(`${join(current, 'trials.jsonl')}: ignored ${invalid} invalid journal rows; using trial files where needed.`);
+      }
+      for (const name of trials) {
+        run.trials++;
+        let row = journal.get(name);
+        if (!row) {
+          try {
+            const saved = JSON.parse(readFileSync(join(current, name), 'utf8'));
+            row = {status: saved?.error !== undefined ? 'error' : saved?.result?.status,
+              termination: saved?.result?.termination, elapsedMs: saved?.result?.stats?.elapsedMs};
+          } catch {
+            run.unreadable++;
+            result.warnings.push(`Cannot parse ${join(current, name)} (possibly still being written).`);
+            continue;
+          }
+        }
+        const key = statusKeys.get(row.status);
+        if (!key) {
+          run.unreadable++;
+          result.warnings.push(`Unrecognized trial status in ${join(current, name)}`);
+          continue;
+        }
+        run[key]++;
+        if (row.status === 'inconclusive' && row.termination === 'timeout') run.timeouts++;
+        if (row.status === 'inconclusive' && row.termination === 'maxNodes') run.nodeLimits++;
+        if (nonnegative(row.elapsedMs)) run.searchMs += row.elapsedMs;
+      }
+      result.runs.push(run);
+      for (const key of Object.keys(result.totals) as (keyof Counts)[]) result.totals[key] += run[key];
+    }
+    // Do not follow symlinks/junctions: avoid cycles and double counting.
+    for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) scan(join(current, entry.name));
+  }
+  scan(directory);
+  return result;
+}
+
+export function formatSummary(summary: ResultsSummary): string {
+  const t = summary.totals;
+  const lines = [
+    `Results: ${summary.directory}`,
+    `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
+    `Found: ${t.found} | Candidates: ${t.candidates} | Inconclusive: ${t.inconclusive} | Errors: ${t.errors} | Unreadable: ${t.unreadable}`,
+    `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${(t.searchMs / 1000).toFixed(1)}s.`,
+    ''
+  ];
+  const rows = [['Run', 'Kind', 'd', 'Points', 'Saved/Planned', 'Found', 'Candidate', 'Inconcl.', 'Error', 'Unread.', 'State'],
+    ...summary.runs.map(r => [relative(summary.directory, r.directory) || '.', r.kind, String(r.dimension ?? '-'), String(r.points ?? '-'),
+      `${r.trials}/${r.expected ?? '?'}`, String(r.found), String(r.candidates), String(r.inconclusive), String(r.errors), String(r.unreadable), r.finished ? 'finished' : 'unfinished'])];
+  const widths = rows[0].map((_, i) => Math.max(...rows.map(row => row[i].length)));
+  lines.push(...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));
+  if (summary.warnings.length) lines.push('', ...summary.warnings.map(w => `Warning: ${w}`));
+  return lines.join('\n') + '\n';
+}

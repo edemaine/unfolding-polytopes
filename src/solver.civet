@@ -1,0 +1,118 @@
+"civet esCompat";
+import {attachFacet, interiorOverlap, rootPlacement} from './unfold.civet';
+import type {Placement} from './unfold.civet';
+import type {Polytope} from './polytope.civet';
+
+export interface SolveOptions {
+  root?: number;
+  maxNodes?: number;
+  timeoutMs?: number;
+  overlapTolerance?: number;
+  // Disable pruning and/or early success for enumeration and cross-checks.
+  pruneOverlaps?: boolean;
+  stopAfterFirst?: boolean;
+}
+
+export interface SolveResult {
+  status: 'found' | 'no-unfolding' | 'inconclusive';
+  termination: 'solution' | 'exhausted' | 'maxNodes' | 'timeout';
+  exhaustive: boolean;
+  numerical: true;
+  overlapTolerance: number;
+  tree: number[] | null;
+  placements: Placement[] | null;
+  stats: {nodes: number; completeTrees: number; overlapPrunes: number; disconnectedPrunes: number; solutions: number; elapsedMs: number};
+}
+
+class SearchLimit extends Error {
+  constructor(public reason: 'maxNodes' | 'timeout') { super(reason); }
+}
+
+export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
+  const start = performance.now();
+  const maxNodes = options.maxNodes ?? Infinity;
+  const timeoutMs = options.timeoutMs ?? Infinity;
+  const eps = options.overlapTolerance ?? 16 * poly.tolerance;
+  if (!(maxNodes >= 0) || (maxNodes !== Infinity && !Number.isSafeInteger(maxNodes))) throw new Error('maxNodes must be a nonnegative safe integer or Infinity.');
+  if (!(timeoutMs >= 0) || Number.isNaN(timeoutMs)) throw new Error('timeoutMs must be nonnegative.');
+  if (!(eps > 0 && Number.isFinite(eps))) throw new Error('overlapTolerance must be positive and finite.');
+  const root = options.root ?? 0;
+  const stats = {nodes: 0, completeTrees: 0, overlapPrunes: 0, disconnectedPrunes: 0, solutions: 0, elapsedMs: 0};
+  const placed = new Map<number, Placement>([[root, rootPlacement(poly, root)]]);
+  const excluded = new Set<number>();
+  const tree: number[] = [];
+  let witnessTree: number[] | null = null;
+  let witnessPlacements: Placement[] | null = null;
+  const poll = (): void => { if (performance.now() - start >= timeoutMs) throw new SearchLimit('timeout'); };
+
+  function connected(): boolean {
+    const reached = new Set(placed.keys());
+    const queue = [...reached];
+    for (let i = 0; i < queue.length; i++) {
+      for (const id of poly.facets[queue[i]].ridges) {
+        if (excluded.has(id)) continue;
+        for (const f of poly.ridges[id].facets) if (!reached.has(f)) { reached.add(f); queue.push(f); }
+      }
+    }
+    return reached.size === poly.facets.length;
+  }
+
+  function visit(): boolean {
+    poll();
+    if (stats.nodes >= maxNodes) throw new SearchLimit('maxNodes');
+    stats.nodes++;
+    if (placed.size === poly.facets.length) {
+      stats.completeTrees++;
+      const faces = [...placed.values()];
+      if (options.pruneOverlaps === false) {
+        for (let i = 0; i < faces.length; i++) {
+          for (let j = 0; j < i; j++) if (interiorOverlap(faces[i], faces[j], eps, poll)) return false;
+        }
+      }
+      stats.solutions++;
+      if (!witnessTree) {
+        witnessTree = [...tree];
+        witnessPlacements = faces.sort((a, b) => a.facet - b.facet);
+      }
+      return options.stopAfterFirst !== false;
+    }
+    if (!connected()) { stats.disconnectedPrunes++; return false; }
+    // Branch on the first undecided edge leaving the connected placed set.
+    // In the include branch its far endpoint is new, so cycles cannot form.
+    // In the exclude branch this edge stays forbidden in all descendants.
+    // Every rooted spanning tree follows exactly one sequence of decisions.
+    const id = poly.ridges.findIndex((r, i) => !excluded.has(i) && placed.has(r.facets[0]) !== placed.has(r.facets[1]));
+    if (id < 0) return false;
+    const edge = poly.ridges[id];
+    const parent = placed.has(edge.facets[0]) ? edge.facets[0] : edge.facets[1];
+    const child = attachFacet(poly, placed.get(parent)!, id);
+    let overlaps = false;
+    if (options.pruneOverlaps !== false) {
+      for (const other of placed.values()) {
+        if (interiorOverlap(child, other, eps, poll)) { overlaps = true; break; }
+      }
+    }
+    if (overlaps) { stats.overlapPrunes++; } else {
+      placed.set(child.facet, child); tree.push(id);
+      const stop = visit();
+      tree.pop(); placed.delete(child.facet);
+      if (stop) return true;
+    }
+    excluded.add(id);
+    const stop = visit();
+    excluded.delete(id);
+    return stop;
+  }
+
+  let termination: SolveResult['termination'];
+  try { termination = visit() ? 'solution' : 'exhausted'; } catch (error) {
+    if (!(error instanceof SearchLimit)) throw error;
+    termination = error.reason;
+  }
+  stats.elapsedMs = performance.now() - start;
+  return {
+    status: witnessTree ? 'found' : termination === 'exhausted' ? 'no-unfolding' : 'inconclusive',
+    termination, exhaustive: termination === 'exhausted', numerical: true, overlapTolerance: eps,
+    tree: witnessTree, placements: witnessPlacements, stats
+  };
+}

@@ -1,0 +1,86 @@
+"civet esCompat";
+// Small, dimension-independent numerical primitives. Vectors are column vectors.
+export type Vector = number[];
+export type Matrix = number[][];
+
+export const dot = (a: Vector, b: Vector): number => a.reduce((s, x, i) => s + x * b[i], 0);
+export const add = (a: Vector, b: Vector): Vector => a.map((x, i) => x + b[i]);
+export const sub = (a: Vector, b: Vector): Vector => a.map((x, i) => x - b[i]);
+export const mul = (a: Vector, s: number): Vector => a.map(x => x * s);
+export const norm = (a: Vector): number => Math.hypot(...a);
+export const apply = (a: Matrix, x: Vector): Vector => a.map(row => dot(row, x));
+export const mean = (points: Vector[]): Vector => points[0].map((_, j) => points.reduce((s, p) => s + p[j] / points.length, 0));
+export const unit = (a: Vector, eps: number): Vector => {
+  const length = norm(a);
+  if (length <= eps) throw new Error('Numerically degenerate direction; rescale or reduce tolerance.');
+  return mul(a, 1 / length);
+};
+
+export function residual(v: Vector, basis: Matrix): Vector {
+  let r = [...v];
+  // Reorthogonalization matters for thin facets and nearly dependent input.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const b of basis) r = sub(r, mul(b, dot(r, b)));
+  }
+  return r;
+}
+
+export function orthonormal(vectors: Matrix, eps: number): Matrix {
+  const basis: Matrix = [];
+  for (const v of vectors) {
+    const r = residual(v, basis);
+    if (norm(r) > eps) basis.push(unit(r, eps));
+  }
+  return basis;
+}
+
+export const affineBasis = (points: Vector[], eps: number): Matrix => (
+  points.length ? orthonormal(points.slice(1).map(p => sub(p, points[0])), eps) : []);
+
+export function perpendicular(basis: Matrix, dimension: number, eps: number): Vector {
+  let best: Vector = [];
+  let length = 0;
+  for (let i = 0; i < dimension; i++) {
+    const r = residual(Array.from({length: dimension}, (_, j) => Number(i === j)), basis);
+    if (norm(r) > length) { best = r; length = norm(r); }
+  }
+  return unit(best, eps);
+}
+
+export function* combinations(n: number, k: number): Generator<number[]> {
+  if (k < 0 || k > n) return;
+  const indices = Array.from({length: k}, (_, i) => i);
+  while (true) {
+    yield [...indices];
+    let i = k - 1;
+    while (i >= 0 && indices[i] === n - k + i) i--;
+    if (i < 0) return;
+    indices[i]++;
+    for (let j = i + 1; j < k; j++) indices[j] = indices[j - 1] + 1;
+  }
+}
+
+// Gaussian elimination with partial pivoting; null means numerically singular.
+export function solveLinear(matrix: Matrix, rhs: Vector, eps: number): Vector | null {
+  const n = rhs.length;
+  const a = matrix.map((row, i) => [...row, rhs[i]]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
+    }
+    if (Math.abs(a[pivot][col]) <= eps) return null;
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    for (let row = col + 1; row < n; row++) {
+      const ratio = a[row][col] / a[col][col];
+      for (let j = col; j <= n; j++) a[row][j] -= ratio * a[col][j];
+    }
+  }
+  const x = Array(n).fill(0);
+  for (let row = n - 1; row >= 0; row--) {
+    let value = a[row][n];
+    for (let j = row + 1; j < n; j++) value -= a[row][j] * x[j];
+    x[row] = value / a[row][row];
+  }
+  return x.every(Number.isFinite) ? x : null;
+}

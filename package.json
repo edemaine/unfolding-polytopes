@@ -1,0 +1,21 @@
+{
+  "name": "unfolding-polytopes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "civet test/run.civet",
+    "check": "civet --typecheck src/cli.civet test/run.civet",
+    "solve": "civet src/cli.civet solve",
+    "generate": "civet src/cli.civet generate",
+    "search": "civet src/cli.civet search",
+    "retry": "civet src/cli.civet retry",
+    "summary": "civet src/cli.civet summary"
+  },
+  "dependencies": {
+    "@danielx/civet": "^0.11.16"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "typescript": "^5.9.3"
+  }
+}
