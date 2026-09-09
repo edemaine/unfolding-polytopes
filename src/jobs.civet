@@ -29,6 +29,25 @@ export interface TrialTask {
 
 export const trialName = (index: number, seed: number): string => `trial-${String(index).padStart(6, '0')}-seed-${seed}.json`;
 
+export function trialStatuses(directory: string): {statuses: Map<string, string>; invalidRows: number} {
+  const statuses = new Map<string, string>();
+  let invalidRows = 0;
+  const path = join(directory, 'trials.jsonl');
+  if (!existsSync(path)) return {statuses, invalidRows};
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (typeof row?.file !== 'string' || !/^trial-[^\\/]+\.json$/.test(row.file)) { invalidRows++; continue; }
+      if (!['found', 'no-unfolding', 'inconclusive', 'error'].includes(row.status)) {
+        statuses.delete(row.file); invalidRows++; continue;
+      }
+      statuses.set(row.file, row.status);
+    } catch { invalidRows++; }
+  }
+  return {statuses, invalidRows};
+}
+
 export function generatedInput(generator: GeneratorSpec): {points: Vector[]; generator: GeneratorSpec} {
   if (generator.family !== 'random') throw new Error('Missing trial requires a saved random generator.');
   const scales = generator.scales ?? Array(generator.dimension).fill(1);

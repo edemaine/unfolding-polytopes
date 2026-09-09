@@ -556,4 +556,39 @@ test('automatic seeds respect matching reservations, explicit seeds, and concurr
   }
 });
 
+test('retry uses journal statuses without opening indexed completed trials', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-index-'));
+  try {
+    const source = join(directory, 'source');
+    mkdirSync(source);
+    const journal: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      const name = `trial-completed-${i}.json`;
+      // Invalid contents make any unnecessary coordinate-file read fail.
+      writeFileSync(join(source, name), 'This indexed completed trial must not be opened.');
+      journal.push(JSON.stringify({file: name, status: ['found', 'no-unfolding', 'error'][i % 3]}));
+    }
+    const input = generatedInput({family: 'random', dimension: 2, count: 3, seed: 0});
+    for (const name of ['trial-indexed.json', 'trial-unindexed.json', 'trial-invalid-row.json']) {
+      writeFileSync(join(source, name), JSON.stringify({...input, result: {status: 'inconclusive'}}));
+    }
+    journal.push(JSON.stringify({file: 'trial-indexed.json', status: 'inconclusive'}));
+    journal.push(JSON.stringify({file: 'trial-indexed.json', status: 'inconclusive'}));
+    journal.push(JSON.stringify({file: 'trial-missing-file.json', status: 'inconclusive'}));
+    journal.push(JSON.stringify({file: 'trial-invalid-row.json', status: 'found'}));
+    journal.push(JSON.stringify({file: 'trial-invalid-row.json', status: 'unknown'}));
+    journal.push('{truncated');
+    writeFileSync(join(source, 'trials.jsonl'), journal.join('\n'));
+    writeFileSync(join(source, 'summary.json'), JSON.stringify({found: 500, inconclusive: 0}));
+    const retried = cli(['retry', source, '--max-nodes', '0']);
+    assert.equal(retried.status, 0, String(retried.stderr));
+    const rows = String(retried.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(rows.map(row => row.sourceFile), ['trial-indexed.json', 'trial-invalid-row.json', 'trial-unindexed.json'].map(name => join(source, name)));
+    assert.ok(rows.every(row => row.status === 'inconclusive'));
+    assert.match(String(retried.stderr), /ignored 2 invalid journal rows/);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
 console.log(`${passed} test groups passed.`);
