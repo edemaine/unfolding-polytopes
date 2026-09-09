@@ -53,9 +53,11 @@ pnpm summary results --json --output report.json
 
 `termination` records `solution`, `exhausted`, `maxNodes`, or `timeout`. `exhaustive` is true only for `exhausted`. With `--all`, a limited run can still report `found` if it has already found a witness; its solution count is then only a lower bound. `completeTrees` counts actual leaves visited, not the trees eliminated by partial-overlap pruning.
 
-`search` uses successive seeds and writes every trial to a fresh `results/run-*` directory (`--output` changes the parent directory). Each trial records the original points, generator parameters, hull and solver options, facet/ridge indices, status, statistics, and any unfolding. `trials.jsonl` provides one summary per trial; `summary.json` contains totals. Geometry failures are saved as errors, separate from candidates and cutoffs. Interrupting a batch preserves completed trials.
+`search` uses successive seeds and writes every trial to a fresh `results/run-*` directory (`--output` changes the parent directory). Without `--seed`, it scans that parent recursively for matching random generation parameters (dimension, point count, distribution, and axis scales) and starts after the largest **planned** seed range. Using planned ranges prevents overlap with jobs still running; interrupted ranges can be completed with `retry`. The first matching run starts at 0. An explicit `--seed` permits intentional reuse; `generate` and `solve` still default to 0. The allocated range is printed at startup and saved in `run.json` before trials begin. Searches using the same output parent coordinate allocation through a short-lived directory lock. Automatic allocation refuses to wrap the PRNG's 32-bit seed range.
 
-Rerun just the inconclusive examples from a run directory:
+Each trial records the original points, generator parameters, hull and solver options, facet/ridge indices, status, statistics, and any unfolding. `trials.jsonl` provides one summary per trial; `summary.json` contains totals. Geometry failures are saved as errors, separate from candidates and cutoffs. Interrupting a batch preserves completed trials.
+
+Resume unfinished runs and rerun inconclusive examples:
 
 ```sh
 pnpm retry results/run-XXXXXX
@@ -64,7 +66,9 @@ pnpm retry results/run-XXXXXX results/run-YYYYYY
 pnpm retry results/run-XXXXXX --timeout-ms 60000 --overlap-tolerance 1e-10
 ```
 
-`retry` reads each directory's `trial-*.json` files and selects only `result.status: "inconclusive"`. It restarts each search using the exact saved points, tolerances, root, and search settings, with **all computational limits reset to Infinity** unless explicitly supplied. Solver/geometry flags override saved settings. It writes one fresh `retry-*` directory under the first input directory's parent; `--output` changes the parent directory. A single input preserves trial filenames; multiple inputs use new sequential filenames to avoid collisions. Each record has a `sourceFile` link to its original trial. Repeated directory arguments are processed once. Original runs are untouched. A retry directory can itself be retried. Selection is a snapshot of the files present when the command starts; it does not wait for ongoing source runs. If there are no inconclusive examples, it prints that fact and creates no directory.
+`retry` compares each run's planned trials with its saved `trial-*.json` files. For each input directory it first fills missing seeds (including gaps), then reruns records with `result.status: "inconclusive"`. Found unfoldings, candidates, and recorded errors are already attempted and are skipped. Missing random trials are regenerated from the saved generator settings; existing trials reuse their exact points. Tolerances, root, and search settings are preserved, with **all computational limits reset to Infinity** unless explicitly supplied. Solver/geometry flags override saved settings.
+
+It writes one fresh `retry-*` directory under the first input directory's parent; `--output` changes the parent directory. A single input preserves trial filenames; multiple inputs use new sequential filenames to avoid collisions. Each record has a `sourceFile` path to its original trial (which may be absent for a missing seed). Repeated directory arguments are processed once. Original runs are untouched. The new run saves a task manifest, so if it is interrupted, pass **that retry directory** to `retry` to continue its remaining tasks. Older retry runs are also supported using their saved source-file lists. To avoid duplicating work, stop a source job before resuming it; selection is a snapshot, not a live handoff. If there is no missing or inconclusive work, no directory is created. Existing malformed trial JSON is reported as an error rather than silently discarded.
 
 To investigate a candidate or a cutoff, pass its saved trial JSON to `solve`. This reuses the **points**; specify the desired tolerances and budgets again:
 

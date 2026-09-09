@@ -1,6 +1,6 @@
 "civet esCompat";
 import assert from 'node:assert/strict';
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -9,6 +9,8 @@ import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/lina
 import type {Vector} from '../src/linalg.civet';
 import type {Placement, Polytope} from '../src/index.civet';
 import {formatSummary, summarizeResults} from '../src/summary.civet';
+import {generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from '../src/jobs.civet';
+import type {GeneratorSpec} from '../src/jobs.civet';
 
 let passed = 0;
 function test(name: string, run: () => void): void {
@@ -436,6 +438,120 @@ test('summary sorts numeric parameters, aggregates matching runs, and puts total
     assert.match(formatSummary(summarizeResults(empty)), /TOTAL.*0\/0/);
   } finally {
     // Fresh mkdtemp directory owned by this test.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('retry fills gaps, skips attempted trials, and resumes an interrupted retry manifest', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-resume-test-'));
+  try {
+    const source = join(directory, 'source');
+    mkdirSync(source);
+    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 4, seed: 10, distribution: 'sphere', scales: [2, .5]};
+    const hullOptions = {tolerance: 1e-8, maxCombinations: 100};
+    const solveOptions = {root: 0, maxNodes: 0, timeoutMs: 10000};
+    writeFileSync(join(source, 'run.json'), JSON.stringify({trials: 5, seed: 10, generator, hullOptions, solveOptions}));
+    for (const [index, status] of [[0, 'found'], [2, 'inconclusive'], [3, 'error']] as const) {
+      const input = generatedInput({...generator, seed: 10 + index});
+      const record = status === 'error' ? {error: 'old error'} : {result: {status, overlapTolerance: 1e-7}};
+      writeFileSync(join(source, trialName(index, 10 + index)), JSON.stringify({...input, hullOptions, solveOptions, ...record}));
+    }
+    const names = readdirSync(source);
+    assert.deepEqual(missingTasks(source, new Set(names)).map(t => t.seed), [11, 14]);
+    const resumed = cli(['retry', source, '--max-nodes', '0']);
+    assert.equal(resumed.status, 0, String(resumed.stderr));
+    assert.match(String(resumed.stderr), /1 inconclusive trials and resuming 2 missing trials/);
+    const rows = String(resumed.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(rows.map(r => r.seed), [11, 14, 12]);
+    const run = join(directory, readdirSync(directory).find(n => n.startsWith('retry-'))!);
+    const manifest = JSON.parse(readFileSync(join(run, 'run.json'), 'utf8'));
+    assert.equal(manifest.tasks.length, 3);
+    assert.ok(manifest.tasks.every((t: any) => t.input === undefined));
+    for (const row of rows) {
+      const saved = JSON.parse(readFileSync(join(run, row.file), 'utf8'));
+      assert.deepEqual(saved.points, generatedInput({...generator, seed: row.seed}).points);
+      assert.equal(saved.hullOptions.tolerance, 1e-8);
+    }
+    // Simulate a retry interrupted after its first successful trial. Stale
+    // journal and summary entries must not conceal the missing output files.
+    const firstPath = join(run, rows[0].file);
+    const first = JSON.parse(readFileSync(firstPath, 'utf8'));
+    first.result.status = 'found';
+    writeFileSync(firstPath, JSON.stringify(first));
+    for (const row of rows.slice(1)) unlinkSync(join(run, row.file));
+    const again = cli(['retry', run]);
+    assert.equal(again.status, 0, String(again.stderr));
+    const againRows = String(again.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(againRows.map(r => r.seed), [14, 12]);
+    assert.ok(againRows.every(r => r.status === 'found'));
+    assert.deepEqual(readdirSync(source), names);
+
+    const legacy = join(directory, 'legacy');
+    mkdirSync(legacy);
+    writeFileSync(join(legacy, 'run.json'), JSON.stringify({command: 'retry', trials: 1,
+      sourceFiles: [join(source, trialName(2, 12))], overrides: {tolerance: '1e-10', 'overlap-tolerance': '1e-9', all: 'true'}}));
+    const legacyTasks = missingTasks(legacy, new Set());
+    assert.equal(legacyTasks[0].seed, 12);
+    assert.equal(legacyTasks[0].hullOptions.tolerance, 1e-10);
+    assert.equal(legacyTasks[0].solveOptions.overlapTolerance, 1e-9);
+    assert.equal(legacyTasks[0].solveOptions.stopAfterFirst, false);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('automatic seeds respect matching reservations, explicit seeds, and concurrent starts', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-seeds-test-'));
+  try {
+    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 3, distribution: 'sphere', seed: 0};
+    const history = join(directory, 'history');
+    mkdirSync(history);
+    const addRun = (name: string, g: GeneratorSpec, trials: number): void => {
+      const run = join(history, name);
+      mkdirSync(run, {recursive: true});
+      writeFileSync(join(run, 'run.json'), JSON.stringify({seed: g.seed, trials, generator: g}));
+    };
+    assert.equal(nextSearchSeed(history, generator, 1), 0);
+    addRun('unfinished', {...generator, seed: 10}, 5);
+    addRun('different-distribution', {...generator, seed: 100, distribution: 'gaussian'}, 10);
+    addRun('different-scales', {...generator, seed: 100, scales: [2, 1]}, 10);
+    addRun('different-count', {...generator, seed: 100, count: 4}, 10);
+    assert.equal(nextSearchSeed(history, generator, 1), 15);
+    addRun('nested/later', {...generator, seed: 20, scales: [1, 1]}, 5);
+    assert.equal(nextSearchSeed(history, generator, 1), 25);
+    assert.throws(() => withSeedLock(history, () => { throw new Error('allocation failed'); }), /allocation failed/);
+    assert.equal(existsSync(join(history, '.seed-allocation-lock')), false);
+    addRun('exhausted', {...generator, seed: 2 ** 32 - 1}, 1);
+    assert.throws(() => nextSearchSeed(history, generator, 1), /exhausted/);
+
+    const parent = join(directory, 'automatic');
+    const args = ['search', '--dimension', '2', '--points', '3', '--trials', '2', '--max-nodes', '0', '--output', parent];
+    const first = cli(args);
+    assert.equal(first.status, 0, String(first.stderr));
+    assert.deepEqual(String(first.stdout).trim().split('\n').map(line => JSON.parse(line).seed), [0, 1]);
+    const second = cli(args);
+    assert.equal(second.status, 0, String(second.stderr));
+    assert.deepEqual(String(second.stdout).trim().split('\n').map(line => JSON.parse(line).seed), [2, 3]);
+    const explicit = cli([...args, '--seed', '0']);
+    assert.equal(explicit.status, 0, String(explicit.stderr));
+    assert.deepEqual(String(explicit.stdout).trim().split('\n').map(line => JSON.parse(line).seed), [0, 1]);
+
+    // Two independent processes share the allocation lock. Run their async
+    // orchestration in a child process because this test harness is synchronous.
+    const script = `const {spawn} = require('node:child_process');
+      Promise.all([0,1].map(() => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ${JSON.stringify(['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args])});
+        let out = '', err = '';
+        child.stdout.on('data', x => out += x); child.stderr.on('data', x => err += x);
+        child.on('error', reject);
+        child.on('exit', code => code === 0 ? resolve(out.trim().split('\\n').map(x => JSON.parse(x).seed)) : reject(new Error(err)));
+      }))).then(x => console.log(JSON.stringify(x))).catch(e => { console.error(e); process.exitCode = 1; });`;
+    const concurrent = spawnSync(process.execPath, ['-e', script], {encoding: 'utf8'});
+    assert.equal(concurrent.status, 0, concurrent.stderr);
+    const seeds = JSON.parse(concurrent.stdout).flat().sort((a: number, b: number) => a - b);
+    assert.deepEqual(seeds, [4, 5, 6, 7]);
+    assert.equal(existsSync(join(parent, '.seed-allocation-lock')), false);
+  } finally {
     rmSync(directory, {recursive: true, force: true});
   }
 });

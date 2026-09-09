@@ -5,13 +5,15 @@ import {convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
+import {missingTasks, nextSearchSeed, taskInput, trialName, withSeedLock} from './jobs.civet';
+import type {GeneratorSpec, TrialTask} from './jobs.civet';
 
 const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary> [input.json|directory] [options]
 
 generate  Write {points, generator} JSON, to stdout or --output FILE.
 solve     Read points from input.json, or generate them with the options below.
 search    Search successive random seeds; save every trial in a new run directory.
-retry     Rerun inconclusive trials from one or more directories into one new run.
+retry     Resume missing trials and rerun inconclusive trials into one new run.
           Usage: retry DIRECTORY [DIRECTORY ...] [options]
           Default output parent is the first directory's parent.
           Reuse saved points and settings; reset all work limits to Infinity.
@@ -22,7 +24,7 @@ Generation options:
   --family NAME        random (default), simplex, cube, cross, cyclic, hypersimplex
   --dimension N        Ambient dimension >= 2 (default 4)
   --points N           Number of random/cyclic points (default dimension+3)
-  --seed N             Integer seed (default 0; search increments it per trial)
+  --seed N             Starting seed (search: auto after matching runs; otherwise 0)
   --distribution NAME  sphere (default), ball, gaussian, box
   --weight N           Hypersimplex weight in dimension+1 coordinates (default 2)
   --scales X,Y,...     Positive axis scale factors (default all 1)
@@ -110,7 +112,7 @@ function main(args: string[]): void {
   const weight = integer('weight', 2, 1);
   const scales = flags.has('scales') ? flags.get('scales')!.split(',').map(Number) : Array(d).fill(1);
   if (scales.length !== d || scales.some(x => !(x > 0 && Number.isFinite(x)))) throw new Error('--scales needs one positive finite factor per dimension.');
-  const generate = (currentSeed: number): {points: Vector[]; generator: object} => {
+  const generate = (currentSeed: number): {points: Vector[]; generator: GeneratorSpec} => {
     let points: Vector[];
     if (family === 'random') { points = randomPoints(d, count, currentSeed, distribution); }
     else if (family === 'simplex') { points = simplex(d); }
@@ -153,78 +155,92 @@ function main(args: string[]): void {
     output(document(input, poly, solve(poly, solveOptions)));
     return;
   }
-  interface Trial {
-    input: {points: Vector[]; generator?: unknown};
-    name: string;
-    seed?: number;
-    sourceFile?: string;
-    hullOptions: HullOptions;
-    solveOptions: SolveOptions;
-  }
-  let jobs: Iterable<Trial>;
+  let jobs: Iterable<TrialTask>;
   let metadata: object;
+  let directory: string | undefined;
+  const parent = flags.get('output') ?? (command === 'retry' ? dirname(resolve(file!)) : 'results');
   if (command === 'retry') {
     const sourceDirectories = [...new Map(positional.slice(1).map(path => {
       const full = realpathSync(path);
       return [process.platform === 'win32' ? full.toLowerCase() : full, full] as const;
     })).values()];
-    const selected: Trial[] = [];
-    // Snapshot trial files, not the journal: an interrupted run may have saved
-    // its final trial before appending the corresponding journal entry.
+    const selected: TrialTask[] = [];
+    let missing = 0;
+    let inconclusive = 0;
+    const enqueue = (task: TrialTask, effectiveOverlap?: number): void => {
+      const usedHull: HullOptions = {
+        tolerance: flags.has('tolerance') ? hullOptions.tolerance : task.hullOptions.tolerance ?? hullOptions.tolerance,
+        maxCombinations: hullOptions.maxCombinations
+      };
+      const usedSolve: SolveOptions = {
+        ...solveOptions,
+        root: flags.has('root') ? solveOptions.root : task.solveOptions.root ?? solveOptions.root,
+        overlapTolerance: flags.has('overlap-tolerance') ? solveOptions.overlapTolerance : task.solveOptions.overlapTolerance ?? effectiveOverlap,
+        stopAfterFirst: flags.has('all') ? false : task.solveOptions.stopAfterFirst ?? true,
+        pruneOverlaps: flags.has('no-prune') ? false : task.solveOptions.pruneOverlaps ?? true
+      };
+      const name = sourceDirectories.length === 1 ? task.name : `trial-${String(selected.length).padStart(6, '0')}.json`;
+      selected.push({...task, name, hullOptions: usedHull, solveOptions: usedSolve});
+    };
     for (const sourceDirectory of sourceDirectories) {
-      for (const entry of readdirSync(sourceDirectory, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)) {
+      const entries = readdirSync(sourceDirectory, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1);
+      const files = new Set(entries.filter(e => e.isFile()).map(e => e.name));
+      // Finish unattempted seeds before revisiting potentially expensive cutoffs.
+      for (const task of missingTasks(sourceDirectory, files)) { enqueue(task); missing++; }
+      // Existing files are authoritative even if the journal was not flushed.
+      for (const entry of entries) {
         if (!entry.isFile() || !/^trial-.*\.json$/.test(entry.name)) continue;
         const sourceFile = join(sourceDirectory, entry.name);
-        let saved;
-        try { saved = JSON.parse(readFileSync(sourceFile, 'utf8')); } catch (error) {
-          throw new Error(`Cannot read trial ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        const saved = JSON.parse(readFileSync(sourceFile, 'utf8'));
         if (saved?.result?.status !== 'inconclusive') continue;
-        const usedHull: HullOptions = {
-          tolerance: flags.has('tolerance') ? hullOptions.tolerance : saved.hullOptions?.tolerance ?? saved.polytope?.tolerance ?? hullOptions.tolerance,
-          maxCombinations: hullOptions.maxCombinations
-        };
-        const usedSolve: SolveOptions = {
-          ...solveOptions,
-          root: flags.has('root') ? solveOptions.root : saved.solveOptions?.root ?? solveOptions.root,
-          overlapTolerance: flags.has('overlap-tolerance') ? solveOptions.overlapTolerance : saved.solveOptions?.overlapTolerance ?? saved.result.overlapTolerance,
-          stopAfterFirst: flags.has('all') ? false : saved.solveOptions?.stopAfterFirst ?? true,
-          pruneOverlaps: flags.has('no-prune') ? false : saved.solveOptions?.pruneOverlaps ?? true
-        };
-        // Different runs often reuse trial filenames and seeds. Number combined
-        // retries globally; sourceFile retains the original path and filename.
-        const name = sourceDirectories.length === 1 ? entry.name : `trial-${String(selected.length).padStart(6, '0')}.json`;
-        selected.push({input: {points: saved.points, generator: saved.generator}, name,
-          seed: saved.generator?.seed, sourceFile, hullOptions: usedHull, solveOptions: usedSolve});
+        enqueue({input: {points: saved.points, generator: saved.generator}, name: entry.name,
+          generator: saved.generator, seed: saved.generator?.seed, sourceFile,
+          hullOptions: saved.hullOptions ?? {tolerance: saved.polytope?.tolerance}, solveOptions: saved.solveOptions ?? {}}, saved.result.overlapTolerance);
+        inconclusive++;
       }
     }
-    if (!selected.length) { console.error(`No inconclusive trials in ${sourceDirectories.join(', ')}`); return; }
-    console.error(`Retrying ${selected.length} inconclusive trials from ${sourceDirectories.join(', ')}`);
+    if (!selected.length) { console.error(`No inconclusive trials or missing trials in ${sourceDirectories.join(', ')}`); return; }
+    console.error(`Retrying ${inconclusive} inconclusive trials and resuming ${missing} missing trials from ${sourceDirectories.join(', ')}`);
     jobs = selected;
     metadata = {command, sourceDirectory: sourceDirectories.length === 1 ? sourceDirectories[0] : undefined,
-      sourceDirectories, trials: selected.length, sourceFiles: selected.map(t => t.sourceFile), overrides: Object.fromEntries(flags)};
+      sourceDirectories, trials: selected.length, sourceFiles: selected.map(t => t.sourceFile), overrides: Object.fromEntries(flags),
+      tasks: selected.map(({input, ...task}) => task)};
   } else {
     if (family !== 'random') throw new Error('search uses random polytopes; use solve for a fixed family.');
     const trials = integer('trials', 100, 1);
     if (!Number.isSafeInteger(seed + trials - 1)) throw new Error('Seed range exceeds safe integers.');
-    const firstInput = generate(seed);
-    jobs = (function* (): Generator<Trial> {
+    const allocation = withSeedLock(parent, () => {
+      const spec: GeneratorSpec = {family, dimension: d, count, seed, distribution, weight, scales};
+      const startSeed = flags.has('seed') ? seed : nextSearchSeed(parent, spec, trials);
+      if (!Number.isSafeInteger(startSeed + trials - 1)) throw new Error('Seed range exceeds safe integers.');
+      const firstInput = generate(startSeed);
+      const metadata = {command, trials, seed: startSeed, generator: firstInput.generator, hullOptions, solveOptions};
+      const directory = mkdtempSync(join(parent, 'run-'));
+      writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+      return {startSeed, firstInput, metadata, directory};
+    });
+    const {startSeed, firstInput} = allocation;
+    directory = allocation.directory;
+    metadata = allocation.metadata;
+    console.error(`Seeds ${startSeed} through ${startSeed + trials - 1}${flags.has('seed') ? '' : ' (automatically allocated)'}`);
+    jobs = (function* (): Generator<TrialTask> {
       for (let i = 0; i < trials; i++) {
-        yield {input: i === 0 ? firstInput : generate(seed + i), seed: seed + i,
-          name: `trial-${String(i).padStart(6, '0')}-seed-${seed + i}.json`, hullOptions, solveOptions};
+        yield {input: i === 0 ? firstInput : generate(startSeed + i), seed: startSeed + i,
+          name: trialName(i, startSeed + i), hullOptions, solveOptions};
       }
     })();
-    metadata = {command, trials, seed, generator: firstInput.generator, hullOptions, solveOptions};
   }
-  const parent = flags.get('output') ?? (command === 'retry' ? dirname(resolve(file!)) : 'results');
-  mkdirSync(parent, {recursive: true});
-  const directory = mkdtempSync(join(parent, command === 'retry' ? 'retry-' : 'run-'));
-  writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+  if (!directory) {
+    mkdirSync(parent, {recursive: true});
+    directory = mkdtempSync(join(parent, 'retry-'));
+    writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+  }
   console.error(`Saving trials to ${directory}`);
   const totals = {found: 0, candidates: 0, inconclusive: 0, errors: 0};
   let i = 0;
   for (const job of jobs) {
-    const {input, name, sourceFile, hullOptions: usedHull, solveOptions: usedSolve} = job;
+    const {name, sourceFile, hullOptions: usedHull, solveOptions: usedSolve} = job;
+    const input = taskInput(job);
     const provenance = {trial: i++, seed: job.seed, sourceFile};
     let record: object;
     let summary: object;
