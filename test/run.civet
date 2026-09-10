@@ -11,6 +11,8 @@ import type {Vector} from '../src/linalg.civet';
 import type {Placement, Polytope, OverlapMethod} from '../src/index.civet';
 import {formatSummary, summarizeResults} from '../src/summary.civet';
 import {formatTimings, summarizeTimings} from '../src/timings.civet';
+import {trialJSON} from '../src/storage.civet';
+import {compactResults} from '../src/compact.civet';
 import {generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from '../src/jobs.civet';
 import type {GeneratorSpec} from '../src/jobs.civet';
 
@@ -396,6 +398,13 @@ test('CLI generation, file solve, saved batches, cutoff and argument errors', ()
     const solved = cli(['solve', input]);
     assert.equal(solved.status, 0, String(solved.stderr));
     assert.equal(JSON.parse(String(solved.stdout)).result.status, 'found');
+    assert.equal(JSON.parse(String(solved.stdout)).outputDetail, 'concise');
+    assert.equal(JSON.parse(String(solved.stdout)).result.placements, undefined);
+    assert.equal(String(solved.stdout).trim().split('\n').length, 1);
+    const full = cli(['solve', input, '--full-output']);
+    assert.equal(full.status, 0, String(full.stderr));
+    assert.equal(JSON.parse(String(full.stdout)).result.placements.length, 6);
+    assert.equal(JSON.parse(String(full.stdout)).outputDetail, 'full');
     const limited = cli(['solve', input, '--max-nodes=0']);
     assert.equal(JSON.parse(String(limited.stdout)).result.status, 'inconclusive');
     const batch = cli(['search', '--dimension', '3', '--points', '5', '--seed', '17', '--trials', '2', '--output', directory]);
@@ -422,12 +431,69 @@ test('CLI generation, file solve, saved batches, cutoff and argument errors', ()
     assert.equal(saved.hullOptions.maxCombinations, 'Infinity');
     assert.equal(saved.solveOptions.maxNodes, 'Infinity');
     assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
+    assert.equal(saved.result.placements, undefined);
     assert.equal(cli(['solve', '--typo', '1']).status, 1);
     assert.equal(cli(['generate', '--dimension', '2.5']).status, 1);
   } finally {
     // The directory is freshly created by mkdtemp inside the system temp dir.
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+test('trial compaction preserves witnesses and candidates, skips live writes, and is repeatable', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-compact-test-'));
+  try {
+    const points = simplex(3), poly = convexHull(points), result = solve(poly);
+    const record = {formatVersion: 1, points, polytope: {facets: poly.facets.map(f => f.vertices), ridges: poly.ridges}, result};
+    const full = trialJSON(record, true), concise = trialJSON(record);
+    const parsed = JSON.parse(concise);
+    assert.deepEqual(parsed.points, points);
+    assert.deepEqual(parsed.polytope, record.polytope);
+    assert.deepEqual(parsed.result.tree, result.tree);
+    assert.equal(parsed.result.placements, undefined);
+    verify(convexHull(parsed.points), parsed.result.tree);
+    assert.equal(JSON.parse(full).result.placements.length, poly.facets.length);
+    const candidate = {...record, result: {...result, status: 'no-unfolding', tree: null, placements: null}};
+    const candidateText = trialJSON(candidate);
+    assert.equal(JSON.parse(candidateText).outputDetail, 'full');
+    assert.equal(Object.hasOwn(JSON.parse(candidateText).result, 'placements'), true);
+    assert.ok(candidateText.includes('\n  '));
+    const run = join(directory, 'live'); mkdirSync(run);
+    writeFileSync(join(run, 'trial-found.json'), full);
+    writeFileSync(join(run, 'trial-candidate.json'), candidateText);
+    writeFileSync(join(run, 'trial-pending.json'), full);
+    writeFileSync(join(run, 'trial-partial.json'), '{"points":');
+    writeFileSync(join(run, 'trial-invalid.json'), '{');
+    const journal = ['found', 'candidate', 'invalid'].map(name => JSON.stringify({file: `trial-${name}.json`, status: name === 'candidate' ? 'no-unfolding' : 'found'})).join('\n') + '\n';
+    writeFileSync(join(run, 'trials.jsonl'), journal);
+    const preview = compactResults([directory], true);
+    assert.equal(preview.wouldCompact, 1); assert.equal(preview.compacted, 0);
+    assert.equal(readFileSync(join(run, 'trial-found.json'), 'utf8'), full);
+    const compacted = compactResults([directory, run]);
+    assert.equal(compacted.examined, 5); assert.equal(compacted.compacted, 1);
+    assert.equal(compacted.candidates, 1); assert.equal(compacted.pending, 2);
+    assert.equal(compacted.invalid, 1); assert.equal(compacted.errors, 0);
+    assert.equal(compacted.savedBytes, Buffer.byteLength(full) - Buffer.byteLength(concise));
+    assert.equal(readFileSync(join(run, 'trial-found.json'), 'utf8'), concise);
+    assert.equal(readFileSync(join(run, 'trial-candidate.json'), 'utf8'), candidateText);
+    assert.equal(readFileSync(join(run, 'trial-pending.json'), 'utf8'), full);
+    assert.equal(readFileSync(join(run, 'trial-partial.json'), 'utf8'), '{"points":');
+    assert.equal(readFileSync(join(run, 'trials.jsonl'), 'utf8'), journal);
+    assert.equal(compactResults([directory]).compacted, 0);
+    assert.ok(readdirSync(run).every(name => !name.endsWith('.tmp')));
+    // The next pass can consume a trial once the live writer journals it.
+    writeFileSync(join(run, 'trials.jsonl'), journal + JSON.stringify({file: 'trial-pending.json', status: 'found'}) + '\n');
+    assert.equal(compactResults([directory]).compacted, 1);
+    // Completed legacy runs need no journal.
+    const legacy = join(directory, 'legacy'); mkdirSync(legacy);
+    writeFileSync(join(legacy, 'summary.json'), '{}');
+    writeFileSync(join(legacy, 'trial-old.json'), full);
+    const command = cli(['compact', directory, legacy, '--dry-run']);
+    assert.equal(command.status, 0, String(command.stderr));
+    assert.equal(JSON.parse(String(command.stdout)).wouldCompact, 1);
+    assert.equal(compactResults([legacy]).compacted, 1);
+    assert.equal(readFileSync(join(legacy, 'summary.json'), 'utf8'), '{}');
+  } finally { rmSync(directory, {recursive: true, force: true}); }
 });
 
 test('retry selects inconclusive files, preserves settings, resets limits, and supports repeated retries', () => {

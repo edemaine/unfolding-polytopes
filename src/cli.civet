@@ -7,10 +7,12 @@ import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} fro
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
 import {formatTimings, summarizeTimings} from './timings.civet';
+import {trialJSON} from './storage.civet';
+import {compactResults} from './compact.civet';
 import {missingTasks, nextSearchSeed, taskInput, trialName, trialStatuses, withSeedLock} from './jobs.civet';
 import type {GeneratorSpec, TrialTask} from './jobs.civet';
 
-const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary|timings> [input.json|directory] [options]
+const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary|timings|compact> [input.json|directory] [options]
 
 generate  Write {points, generator} JSON, to stdout or --output FILE.
 solve     Read points from input.json, or generate them with the options below.
@@ -21,6 +23,8 @@ retry     Resume missing trials and rerun inconclusive trials into one new run.
           Reuse saved points and settings; reset all work limits to Infinity.
           Explicit solver/geometry options override saved settings.
 summary   Summarize runs recursively in a directory (default results).
+compact   Compact completed trial files recursively (default results).
+          Usage: compact [DIRECTORY ...] [--dry-run]. Safe to repeat during jobs.
 timings   Search-time or --nodes percentiles and tail counts (default results).
           --by-run keeps individual runs separate; --json exports raw values.
 
@@ -54,6 +58,9 @@ Output and search options:
   --by-run             Separate timing distributions for each run
   --include-timeouts   Include timed-out attempts in timing reports
   --nodes              Report search-node counts instead of times
+  --full-output        Include developed placements and pretty-print trial JSON
+                       (automatic for no-unfolding counterexample candidates)
+  --dry-run            Preview compact savings without changing files
   --trials N           Number of random polytopes in search (default 100)
   --help               Show this help
 
@@ -63,7 +70,7 @@ Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
 const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order']);
-const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges']);
+const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges', 'full-output', 'dry-run']);
 
 function main(args: string[]): void {
   const flags = new Map<string, string>();
@@ -85,7 +92,15 @@ function main(args: string[]): void {
   }
   if (flags.has('help') || !positional.length) { console.log(help); return; }
   const [command, file] = positional;
-  if (!['generate', 'solve', 'search', 'retry', 'summary', 'timings'].includes(command) || positional.length > (command === 'retry' ? Infinity : ['solve', 'summary', 'timings'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
+  if (!['generate', 'solve', 'search', 'retry', 'summary', 'timings', 'compact'].includes(command) || positional.length > (['retry', 'compact'].includes(command) ? Infinity : ['solve', 'summary', 'timings'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
+  if (command === 'compact') {
+    for (const name of flags.keys()) if (name !== 'dry-run') throw new Error(`--${name} does not apply to compact.`);
+    const report = compactResults(positional.length > 1 ? positional.slice(1) : ['results'], flags.has('dry-run'), row => console.error(JSON.stringify(row)));
+    console.log(JSON.stringify(report));
+    return;
+  }
+  if (flags.has('dry-run')) throw new Error('--dry-run only applies to compact.');
+  if (flags.has('full-output') && !['solve', 'search', 'retry'].includes(command)) throw new Error('--full-output only applies to solve, search, or retry.');
   if (command === 'timings') {
     for (const name of flags.keys()) if (!['json', 'output', 'by-run', 'include-timeouts', 'nodes'].includes(name)) throw new Error(`--${name} does not apply to timings.`);
     const report = summarizeTimings(file ?? 'results', flags.has('by-run'), flags.has('include-timeouts'), flags.has('nodes'));
@@ -147,9 +162,10 @@ function main(args: string[]): void {
     return {points: points.map(p => p.map((x, j) => x * scales[j])), generator: {family, dimension: d, count: points.length, seed: currentSeed, distribution, weight, scales}};
   };
   const json = (value: unknown): string => JSON.stringify(value, (_, v) => v === Infinity ? 'Infinity' : v, 2) + '\n';
-  const output = (value: unknown): void => {
-    if (flags.has('output')) { writeFileSync(flags.get('output')!, json(value)); }
-    else { process.stdout.write(json(value)); }
+  const output = (value: unknown, trial = false): void => {
+    const text = trial ? trialJSON(value, flags.has('full-output')) : json(value);
+    if (flags.has('output')) { writeFileSync(flags.get('output')!, text); }
+    else { process.stdout.write(text); }
   };
   if (command === 'generate') { output(generate(seed)); return; }
   const hullMethod = flags.get('hull-method') ?? 'incremental';
@@ -186,7 +202,7 @@ function main(args: string[]): void {
     const raw = file ? JSON.parse(readFileSync(file, 'utf8')) : generate(seed);
     const input = Array.isArray(raw) ? {points: raw} : raw;
     const poly = convexHull(input?.points, hullOptions);
-    output(document(input, poly, solve(poly, solveOptions)));
+    output(document(input, poly, solve(poly, solveOptions)), true);
     return;
   }
   let jobs: Iterable<TrialTask>;
@@ -302,7 +318,7 @@ function main(args: string[]): void {
       record = {formatVersion: 1, ...input, sourceFile, hullOptions: usedHull, solveOptions: usedSolve, error: message};
       summary = {...provenance, status: 'error', error: message};
     }
-    writeFileSync(join(directory, name), json(record), {flag: 'wx'});
+    writeFileSync(join(directory, name), trialJSON(record, flags.has('full-output')), {flag: 'wx'});
     const line = JSON.stringify({...summary, file: name});
     appendFileSync(join(directory, 'trials.jsonl'), line + '\n');
     console.log(JSON.stringify({...summary, file: name, outputFile: resolve(directory, name), pid: process.pid}));

@@ -1,0 +1,14 @@
+"civet esCompat";
+
+// Keep incidence and the tree together: ridge IDs can change if a future hull
+// implementation changes its ordering. Only developed placements are omitted.
+export function trialJSON(record: any, full = false): string {
+  full ||= record.result?.status === 'no-unfolding';
+  const {outputDetail: previous, ...rest} = record;
+  const value = {outputDetail: full ? 'full' : 'concise', ...rest};
+  if (!full && value.result) {
+    const {placements, ...result} = value.result;
+    value.result = result;
+  }
+  return JSON.stringify(value, (_, v) => v === Infinity ? 'Infinity' : v, full ? 2 : undefined) + '\n';
+}

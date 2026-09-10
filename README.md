@@ -33,7 +33,7 @@ pnpm exec civet src/cli.civet solve points.json
 
 Input JSON is either an array of points `[[x0, x1, ...], ...]` or an object with a `points` field. Supply coordinates in the polytope's intrinsic dimension $d\ge2$: lower-dimensional inputs in a larger ambient space are rejected. Interior, duplicate, and redundant boundary points are allowed. No facet triangulation or precomputed incidence structure is required.
 
-`solve` stops at the first nonoverlapping tree by default. `--all` counts every successful tree, and `--no-prune` delays overlap testing until a complete tree is built. For example, `pnpm solve --family cube --dimension 3 --all --no-prune` visits all 384 labeled spanning trees. The output includes the first successful tree, developed facet coordinates, tolerances, and search statistics.
+`solve` stops at the first nonoverlapping tree by default. `--all` counts every successful tree, and `--no-prune` delays overlap testing until a complete tree is built. For example, `pnpm solve --family cube --dimension 3 --all --no-prune` visits all 384 labeled spanning trees. The output includes the first successful tree, tolerances, and search statistics.
 
 ## Results and counterexample searches
 
@@ -58,6 +58,22 @@ New runs save `worker: {pid, hostname, startedAt}` in `run.json` before processi
 `search` uses successive seeds and writes every trial to a fresh `results/run-*` directory (`--output` changes the parent directory). Without `--seed`, it scans that parent recursively for matching random generation parameters (dimension, point count, distribution, and axis scales) and starts after the largest **planned** seed range. Using planned ranges prevents overlap with jobs still running; interrupted ranges can be completed with `retry`. The first matching run starts at 0. An explicit `--seed` permits intentional reuse; `generate` and `solve` still default to 0. The allocated range is printed at startup and saved in `run.json` before trials begin. Searches using the same output parent coordinate allocation through a short-lived directory lock. Automatic allocation refuses to wrap the PRNG's 32-bit seed range.
 
 Each trial records the original points, generator parameters, hull and solver options, facet/ridge indices, status, statistics, and any unfolding. `trials.jsonl` provides one summary per trial; `summary.json` contains totals. Geometry failures are saved as errors, separate from candidates and cutoffs. Interrupting a batch preserves completed trials.
+
+`solve`, `search`, and `retry` default to **concise trial JSON**: one line, with `result.placements` omitted. These transformations, developed coordinates, halfspaces, and bounding boxes can be reconstructed with `developTree`. Points, hull incidence, the witness tree, numerical settings, and all statistics remain saved. Keeping incidence preserves the meaning of tree ridge IDs even if a future hull algorithm orders ridges differently. The in-memory `solve` API still returns placements.
+
+Use `--full-output` to retain placements and pretty-print trial JSON. A `no-unfolding` counterexample candidate always gets full output, regardless of this flag. `outputDetail` identifies the representation; older files without it remain readable. Output detail is selected for each command, independently of the numerical settings preserved by `retry`.
+
+To shrink existing trial files in place:
+
+```sh
+pnpm compact                         # All runs under results, recursively
+pnpm compact results/run-AAA results/retry-BBB
+pnpm compact results --dry-run       # Estimate savings without writing
+```
+
+Compaction removes placements and whitespace, including from files originally saved with `--full-output`. It leaves counterexample candidates byte-for-byte unchanged, along with run metadata, journals, and summary files. Each replacement uses a flushed temporary file in the same directory followed by an atomic rename. Files that change during processing or cannot be read/replaced are skipped and reported.
+
+It is safe to repeat while jobs run: in unfinished runs, only journaled trials are eligible, because writers close each trial before journaling it. Unjournaled files wait for a later pass; completed runs with `summary.json` also support older files without journals. Already-concise files are recognized from a short prefix and skipped without parsing the full file. Progress and final JSON report counts, bytes saved (estimated under `--dry-run`), and directory paths. Jobs already running will continue their old output behavior until restarted; repeated compaction catches their later trials.
 
 Every trial's console JSON includes its absolute `outputFile` path and the worker's `pid`, including failed trials. The final totals JSON names `summary.json`. The startup message also prints the PID, so a trial that has not finished yet can be associated with its output directory. Resume that directory with `pnpm retry`. On Windows, `Get-Process -Id PID` in PowerShell also checks whether that process still exists.
 
