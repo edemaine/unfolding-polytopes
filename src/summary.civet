@@ -1,6 +1,6 @@
 "civet esCompat";
 import {readFileSync, readdirSync} from 'node:fs';
-import {join, relative, resolve} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {hostname} from 'node:os';
 
 export interface Counts {
@@ -66,6 +66,44 @@ function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
 export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
   const directory = resolve(path);
   const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
+  type Parameters = {dimension: number | null; points: number | null};
+  const unknown: Parameters = {dimension: null, points: null};
+  const sourceParameters = new Map<string, Parameters>();
+  function source(directory: string, visiting: Set<string>): Parameters {
+    const key = process.platform === 'win32' ? resolve(directory).toLowerCase() : resolve(directory);
+    if (visiting.has(key)) return unknown;
+    const cached = sourceParameters.get(key);
+    if (cached) return cached;
+    let value = unknown;
+    try {
+      const metadata = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'));
+      value = parameters(metadata, new Set([...visiting, key]));
+    } catch {}
+    sourceParameters.set(key, value);
+    return value;
+  }
+  function parameters(metadata: any, visiting = new Set<string>()): Parameters {
+    if (metadata?.generator) return {
+      dimension: nonnegative(metadata.generator.dimension) ? metadata.generator.dimension : null,
+      points: nonnegative(metadata.generator.count) ? metadata.generator.count : null
+    };
+    let values: Parameters[];
+    if (Array.isArray(metadata?.tasks) && metadata.tasks.length) {
+      values = metadata.tasks.map((task: any) => task?.generator ? parameters(task, visiting)
+        : typeof task?.sourceFile === 'string' ? source(dirname(task.sourceFile), visiting) : unknown);
+    } else {
+      const directories = Array.isArray(metadata?.sourceDirectories) && metadata.sourceDirectories.length ? metadata.sourceDirectories
+        : typeof metadata?.sourceDirectory === 'string' ? [metadata.sourceDirectory]
+        : Array.isArray(metadata?.sourceFiles) ? metadata.sourceFiles.filter((file: unknown) => typeof file === 'string').map((file: string) => dirname(file)) : [];
+      values = [...new Set<string>(directories.filter((value: unknown) => typeof value === 'string'))].map(path => source(path, visiting));
+    }
+    // A retry can combine different parameters. Report only values shared by
+    // every planned task/source, including tasks that have not run yet.
+    if (!values.length) return unknown;
+    const first = values[0];
+    return {dimension: values.every(v => v.dimension === first.dimension) ? first.dimension : null,
+      points: values.every(v => v.points === first.points) ? first.points : null};
+  }
   function scan(current: string): void {
     const entries = readdirSync(current, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1);
     const files = new Set(entries.filter(e => e.isFile()).map(e => e.name));
@@ -80,8 +118,7 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
       const expected = Number.isSafeInteger(metadata.trials) && metadata.trials >= 0 ? metadata.trials : null;
       const run: RunSummary = {
         ...counts(), directory: current, kind: metadata.command ?? (metadata.sourceDirectory ? 'retry' : 'search'),
-        dimension: nonnegative(metadata.generator?.dimension) ? metadata.generator.dimension : null,
-        points: nonnegative(metadata.generator?.count) ? metadata.generator.count : null,
+        ...parameters(metadata),
         expected, remaining: expected === null ? null : Math.max(0, expected - trials.length),
         finished: files.has('summary.json'),
         state: files.has('summary.json') ? 'finished' : workerState(metadata.worker),

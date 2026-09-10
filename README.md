@@ -37,6 +37,8 @@ Input JSON is either an array of points `[[x0, x1, ...], ...]` or an object with
 
 ## Results and counterexample searches
 
+Summary obtains retry dimensions and point counts from saved task generators, falling back to source-run metadata for older retries. This also works before a retry finishes its first trial. If a retry mixes parameters, only values shared by every task are shown; differing or unknown values appear as `-`. This lookup does not read trial coordinate files.
+
 ```sh
 pnpm summary                         # All runs under results, recursively
 pnpm summary results/run-XXXXXX      # One run (or any results subdirectory)

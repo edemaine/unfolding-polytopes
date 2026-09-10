@@ -774,6 +774,44 @@ test('summary aggregates nested and unfinished runs without trusting stale total
   }
 });
 
+test('summary resolves retry parameters from tasks and source metadata without trial reads', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-summary-'));
+  try {
+    const make = (name: string, metadata: object): string => {
+      const path = join(directory, name); mkdirSync(path);
+      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
+      return path;
+    };
+    const original = make('original', {command: 'search', generator: {dimension: 4, count: 10}, trials: 1});
+    const tasks = make('tasks', {command: 'retry', trials: 2, tasks: [
+      {name: 'trial-a.json', generator: {dimension: 4, count: 10}},
+      {name: 'trial-b.json', generator: {dimension: 4, count: 10}}
+    ]});
+    writeFileSync(join(tasks, 'trial-a.json'), 'intentionally not parsed');
+    writeFileSync(join(tasks, 'trials.jsonl'), JSON.stringify({file: 'trial-a.json', status: 'found'}) + '\n');
+    const legacy = make('legacy', {command: 'retry', sourceDirectory: original});
+    make('chain', {command: 'retry', sourceDirectories: [legacy, tasks]});
+    make('files', {command: 'retry', sourceFiles: [join(original, 'trial-missing.json')]});
+    make('mixed', {command: 'retry', tasks: [{generator: {dimension: 4, count: 10}}, {generator: {dimension: 4, count: 11}}]});
+    make('unknown', {command: 'retry', tasks: [{generator: {dimension: 4, count: 10}}, {}]});
+    make('cycle', {command: 'retry', sourceDirectory: join(directory, 'cycle')});
+    const summary = summarizeResults(directory);
+    for (const name of ['original', 'tasks', 'legacy', 'chain', 'files']) {
+      const row = summary.runs.find(r => r.directory === join(directory, name))!;
+      assert.equal(row.dimension, 4, name); assert.equal(row.points, 10, name);
+    }
+    const mixed = summary.runs.find(r => r.directory === join(directory, 'mixed'))!;
+    assert.equal(mixed.dimension, 4); assert.equal(mixed.points, null);
+    for (const name of ['unknown', 'cycle']) {
+      const row = summary.runs.find(r => r.directory === join(directory, name))!;
+      assert.equal(row.dimension, null); assert.equal(row.points, null);
+    }
+    assert.equal(summary.groups.find(g => g.dimension === 4 && g.points === 10)!.runCount, 5);
+    assert.equal(summary.totals.found, 1); assert.equal(summary.totals.unreadable, 0);
+    assert.deepEqual(summary.warnings, []);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
+});
+
 test('summary sorts numeric parameters, aggregates matching runs, and puts totals below groups', () => {
   const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-groups-'));
   try {
