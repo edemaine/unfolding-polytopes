@@ -1,6 +1,7 @@
 "civet esCompat";
 import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
+import {hostname} from 'node:os';
 import {hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
@@ -230,7 +231,7 @@ function main(args: string[]): void {
       const firstInput = generate(startSeed);
       const metadata = {command, trials, seed: startSeed, generator: firstInput.generator, hullOptions, solveOptions};
       const directory = mkdtempSync(join(parent, 'run-'));
-      writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+      writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata, worker: {pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString()}}));
       return {startSeed, firstInput, metadata, directory};
     });
     const {startSeed, firstInput} = allocation;
@@ -247,9 +248,9 @@ function main(args: string[]): void {
   if (!directory) {
     mkdirSync(parent, {recursive: true});
     directory = mkdtempSync(join(parent, 'retry-'));
-    writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata}));
+    writeFileSync(join(directory, 'run.json'), json({formatVersion: 1, ...metadata, worker: {pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString()}}));
   }
-  console.error(`Saving trials to ${directory}`);
+  console.error(`Saving trials to ${directory} (PID ${process.pid})`);
   const totals = {found: 0, candidates: 0, inconclusive: 0, errors: 0};
   let i = 0;
   for (const job of jobs) {
@@ -275,10 +276,10 @@ function main(args: string[]): void {
     writeFileSync(join(directory, name), json(record), {flag: 'wx'});
     const line = JSON.stringify({...summary, file: name});
     appendFileSync(join(directory, 'trials.jsonl'), line + '\n');
-    console.log(line);
+    console.log(JSON.stringify({...summary, file: name, outputFile: resolve(directory, name), pid: process.pid}));
   }
   writeFileSync(join(directory, 'summary.json'), json(totals));
-  console.error(JSON.stringify(totals));
+  console.error(JSON.stringify({...totals, outputFile: resolve(directory, 'summary.json'), pid: process.pid}));
   console.error(`Results saved to ${directory}`);
 }
 

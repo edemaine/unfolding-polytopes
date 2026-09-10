@@ -1,6 +1,7 @@
 "civet esCompat";
 import {readFileSync, readdirSync} from 'node:fs';
 import {join, relative, resolve} from 'node:path';
+import {hostname} from 'node:os';
 
 export interface Counts {
   trials: number;
@@ -22,6 +23,8 @@ export interface RunSummary extends Counts {
   expected: number | null;
   remaining: number | null;
   finished: boolean;
+  state: 'finished' | 'running' | 'interrupted' | 'unknown';
+  pid: number | null;
 }
 
 export interface ResultsSummary {
@@ -48,6 +51,16 @@ const statusKeys = new Map<string, 'found' | 'candidates' | 'inconclusive' | 'er
   ['found', 'found'], ['no-unfolding', 'candidates'], ['inconclusive', 'inconclusive'], ['error', 'errors']
 ]);
 
+function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
+  if (worker?.hostname !== hostname() || !Number.isSafeInteger(worker?.pid) || worker.pid <= 0) return 'unknown';
+  try {
+    process.kill(worker.pid, 0); // Existence probe; does not terminate the worker.
+    return 'running';
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'interrupted' : 'unknown';
+  }
+}
+
 // Count saved attempts, including retries separately. Journals avoid parsing
 // large coordinate files, but only rows with an existing trial file count.
 export function summarizeResults(path = 'results'): ResultsSummary {
@@ -70,7 +83,9 @@ export function summarizeResults(path = 'results'): ResultsSummary {
         dimension: nonnegative(metadata.generator?.dimension) ? metadata.generator.dimension : null,
         points: nonnegative(metadata.generator?.count) ? metadata.generator.count : null,
         expected, remaining: expected === null ? null : Math.max(0, expected - trials.length),
-        finished: files.has('summary.json')
+        finished: files.has('summary.json'),
+        state: files.has('summary.json') ? 'finished' : workerState(metadata.worker),
+        pid: Number.isSafeInteger(metadata.worker?.pid) && metadata.worker.pid > 0 ? metadata.worker.pid : null
       };
       const journal = new Map<string, any>();
       if (files.has('trials.jsonl')) {
@@ -146,7 +161,8 @@ export function formatSummary(summary: ResultsSummary): string {
   let offset = 0;
   for (const group of summary.groups) {
     for (const run of summary.runs.slice(offset, offset + group.runCount)) {
-      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, run.finished ? 'finished' : 'unfinished'));
+      const state = run.state === 'running' ? `running (PID ${run.pid})` : run.state;
+      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, state));
     }
     offset += group.runCount;
     if (group.runCount > 1) {
@@ -155,6 +171,7 @@ export function formatSummary(summary: ResultsSummary): string {
     rows.push(Array(rows[0].length).fill(''));
   }
   const expected = summary.runs.some(r => r.expected === null) ? null : summary.runs.reduce((n, r) => n + r.expected!, 0);
+  if (summary.runs.length) rows.push([...rows[0]]);
   rows.push(row('TOTAL', '-', null, null, t, expected, `${summary.runs.filter(r => r.finished).length}/${summary.runs.length} finished`));
   const widths = rows[0].map((_, i) => Math.max(...rows.map(row => row[i].length)));
   lines.push(...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));

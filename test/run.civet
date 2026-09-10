@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {linearProgram} from '../src/primal.civet';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {hostname, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from '../src/index.civet';
@@ -373,6 +373,20 @@ test('CLI generation, file solve, saved batches, cutoff and argument errors', ()
     const batch = cli(['search', '--dimension', '3', '--points', '5', '--seed', '17', '--trials', '2', '--output', directory]);
     assert.equal(batch.status, 0, String(batch.stderr));
     const run = join(directory, readdirSync(directory).find(p => p.startsWith('run-'))!);
+    const progress = String(batch.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(progress.length, 2);
+    for (const row of progress) {
+      assert.equal(row.outputFile, resolve(run, row.file));
+      assert.ok(existsSync(row.outputFile));
+      assert.ok(Number.isInteger(row.pid) && row.pid > 0);
+    }
+    const completion = String(batch.stderr).split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line)).at(-1);
+    assert.equal(completion.outputFile, resolve(run, 'summary.json'));
+    assert.equal(completion.pid, progress[0].pid);
+    const worker = JSON.parse(readFileSync(join(run, 'run.json'), 'utf8')).worker;
+    assert.equal(worker.pid, progress[0].pid);
+    assert.equal(worker.hostname, hostname());
+    assert.ok(Number.isFinite(Date.parse(worker.startedAt)));
     const summary = JSON.parse(readFileSync(join(run, 'summary.json'), 'utf8'));
     assert.equal(summary.found, 2); assert.equal(summary.candidates, 0);
     const saved = JSON.parse(readFileSync(join(run, 'trial-000000-seed-17.json'), 'utf8'));
@@ -483,6 +497,35 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
   }
 });
 
+test('summary checks local worker PIDs and leaves legacy or foreign workers unknown', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-worker-test-'));
+  try {
+    const exited = spawnSync(process.execPath, ['-e', '']);
+    assert.equal(exited.status, 0);
+    const examples = [
+      {name: 'live', worker: {pid: process.pid, hostname: hostname()}, state: 'running'},
+      {name: 'dead', worker: {pid: exited.pid, hostname: hostname()}, state: 'interrupted'},
+      {name: 'foreign', worker: {pid: process.pid, hostname: hostname() + '-other'}, state: 'unknown'},
+      {name: 'legacy', worker: undefined, state: 'unknown'},
+      {name: 'invalid', worker: {pid: -1, hostname: hostname()}, state: 'unknown'},
+      {name: 'done', worker: {pid: process.pid, hostname: hostname()}, state: 'finished'}
+    ];
+    for (const example of examples) {
+      const run = join(directory, example.name); mkdirSync(run);
+      writeFileSync(join(run, 'run.json'), JSON.stringify({trials: 1, worker: example.worker}));
+      if (example.state === 'finished') writeFileSync(join(run, 'summary.json'), '{}');
+    }
+    const report = summarizeResults(directory);
+    for (const example of examples) assert.equal(report.runs.find(r => r.directory === join(directory, example.name))!.state, example.state);
+    assert.match(formatSummary(report), /running \(PID/);
+    assert.match(formatSummary(report), /interrupted/);
+    assert.match(formatSummary(report), /unknown/);
+    assert.doesNotMatch(formatSummary(report), /unfinished/);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
 test('summary aggregates nested and unfinished runs without trusting stale totals', () => {
   const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-test-'));
   const write = (path: string, value: unknown): void => writeFileSync(path, JSON.stringify(value));
@@ -566,6 +609,9 @@ test('summary sorts numeric parameters, aggregates matching runs, and puts total
     assert.ok(subtotal > text.indexOf('z-eight-b') && subtotal < text.indexOf('b-twelve'));
     assert.equal(text.match(/Subtotal/g)!.length, 1);
     const total = text.split('\n').find(line => line.startsWith('TOTAL'))!;
+    const lines = text.split('\n');
+    const header = lines.find(line => line.startsWith('Run '))!;
+    assert.equal(lines[lines.indexOf(total) - 1], header);
     assert.match(total, /6\/\?/);
     assert.ok(text.indexOf('TOTAL') > text.indexOf('c-unknown'));
     assert.ok(!formatSummary(summarizeResults(join(directory, 'z-eight-a'))).includes('Subtotal'));
