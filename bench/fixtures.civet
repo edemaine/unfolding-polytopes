@@ -15,5 +15,5 @@ export interface BenchmarkCase {
 
 // Store the geometry and numerical settings, without local paths or budgets.
 export function benchmarkCase(generator: GeneratorSpec, coordinates: Vector[], hull: HullOptions = {}, solve: SolveOptions = {}, status = 'found', savedNodes?: number, savedMs?: number): BenchmarkCase {
-  return {generator, coordinates, hullOptions: {method: hull.method, tolerance: hull.tolerance ?? 1e-9}, solveOptions: {root: solve.root ?? 0, overlapTolerance: solve.overlapTolerance ?? 16 * (hull.tolerance ?? 1e-9), pruneOverlaps: solve.pruneOverlaps ?? true, stopAfterFirst: solve.stopAfterFirst ?? true}, status, savedNodes, savedMs};
+  return {generator, coordinates, hullOptions: {method: hull.method, tolerance: hull.tolerance ?? 1e-9}, solveOptions: {root: solve.root ?? 0, overlapTolerance: solve.overlapTolerance ?? 16 * (hull.tolerance ?? 1e-9), pruneOverlaps: solve.pruneOverlaps ?? true, stopAfterFirst: solve.stopAfterFirst ?? true, forwardCheck: solve.forwardCheck, forceBridges: solve.forceBridges, branchOrder: solve.branchOrder}, status, savedNodes, savedMs};
 }

@@ -2,7 +2,7 @@
 import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {hostname} from 'node:os';
-import {hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
+import {branchOrders, hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
@@ -44,6 +44,9 @@ Geometry and solver options:
   --root N             Root facet index (default 0)
   --all                Count all nonoverlapping trees instead of stopping at first
   --no-prune           Check overlap only on complete trees (for cross-checking)
+  --forward-check MODE auto (default), on, off; auto starts after 2*facets nodes
+  --no-force-bridges   Disable forced frontier bridges (enabled by default)
+  --branch-order NAME  constrained (default), index, bottleneck
 
 Output and search options:
   --output PATH        File for generate/solve/summary/timings; parent for search/retry
@@ -59,8 +62,8 @@ Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (lim
 Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
-const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
-const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes']);
+const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order']);
+const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges']);
 
 function main(args: string[]): void {
   const flags = new Map<string, string>();
@@ -155,8 +158,14 @@ function main(args: string[]): void {
   if (!(hullOptions.tolerance! > 0 && hullOptions.tolerance! < .01)) throw new Error('--tolerance must be between 0 and 0.01.');
   const overlapMethod = flags.get('overlap-method') ?? 'dual-lp';
   if (!(overlapMethods as readonly string[]).includes(String(overlapMethod))) throw new Error('Invalid --overlap-method.');
+  const forwardMode = flags.get('forward-check') ?? 'auto';
+  if (!['auto', 'on', 'off'].includes(forwardMode)) throw new Error('Invalid --forward-check.');
+  const branchOrder = flags.get('branch-order') ?? 'constrained';
+  if (!(branchOrders as readonly string[]).includes(branchOrder)) throw new Error('Invalid --branch-order.');
   const solveOptions: SolveOptions = {
     overlapMethod: overlapMethod as SolveOptions['overlapMethod'],
+    forwardCheck: forwardMode === 'auto' ? 'auto' : forwardMode === 'on',
+    forceBridges: !flags.has('no-force-bridges'), branchOrder: branchOrder as SolveOptions['branchOrder'],
     root: integer('root', 0, 0), maxNodes: limit('max-nodes', Infinity),
     timeoutMs: limit('timeout-ms', Infinity, false),
     overlapTolerance: flags.has('overlap-tolerance') ? number('overlap-tolerance', 0) : undefined,
@@ -201,6 +210,9 @@ function main(args: string[]): void {
       const usedSolve: SolveOptions = {
         ...solveOptions,
         overlapMethod: flags.has('overlap-method') ? solveOptions.overlapMethod : task.solveOptions.overlapMethod ?? solveOptions.overlapMethod,
+        forwardCheck: flags.has('forward-check') ? solveOptions.forwardCheck : task.solveOptions.forwardCheck ?? solveOptions.forwardCheck,
+        forceBridges: flags.has('no-force-bridges') ? false : task.solveOptions.forceBridges ?? solveOptions.forceBridges,
+        branchOrder: flags.has('branch-order') ? solveOptions.branchOrder : task.solveOptions.branchOrder ?? solveOptions.branchOrder,
         root: flags.has('root') ? solveOptions.root : task.solveOptions.root ?? solveOptions.root,
         overlapTolerance: flags.has('overlap-tolerance') ? solveOptions.overlapTolerance : task.solveOptions.overlapTolerance ?? effectiveOverlap,
         stopAfterFirst: flags.has('all') ? false : task.solveOptions.stopAfterFirst ?? true,

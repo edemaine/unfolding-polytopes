@@ -325,6 +325,33 @@ test('pruning preserves solution counts; independent edge-subset enumeration', (
   assert.ok(prunes > 0, 'Must exercise actual overlapping branches.');
 });
 
+test('forward checking and bridge propagation preserve exhaustive solution counts for every order', () => {
+  let forced = 0, blocked = 0, reused = 0;
+  const examples = [simplex(3), hypercube(3), randomPoints(3, 5, 7, 'gaussian').map(p => [p[0], p[1], p[2] * .05]), cyclic(2, 5)];
+  for (const points of examples) {
+    const poly = convexHull(points);
+    const reference = solve(poly, {stopAfterFirst: false, pruneOverlaps: false, forceBridges: false});
+    for (const branchOrder of ['index', 'constrained', 'bottleneck'] as const) {
+      for (const forwardCheck of [true, false, 'auto'] as const) {
+        for (const forceBridges of [true, false]) {
+          const result = solve(poly, {branchOrder, forwardCheck, forceBridges, stopAfterFirst: false});
+          assert.equal(result.termination, 'exhausted');
+          assert.equal(result.stats.solutions, reference.stats.solutions, `${branchOrder}/${forwardCheck}/${forceBridges}`);
+          if (result.tree) verify(poly, result.tree);
+          forced += result.searchStats.forcedEdges; blocked += result.searchStats.blockedEdges; reused += result.searchStats.reusedOverlapChecks;
+        }
+      }
+    }
+  }
+  assert.ok(forced > 0 && blocked > 0 && reused > 0);
+  const hard = convexHull(randomPoints(4, 11, 17273));
+  const solved = solve(hard, {maxNodes: 200});
+  assert.equal(solved.status, 'found'); verify(hard, solved.tree!);
+  assert.ok(solved.searchStats.parentChecksSkipped > 0);
+  assert.throws(() => solve(hard, {branchOrder: 'invalid' as any}), /branch order/);
+  assert.throws(() => solve(hard, {forwardCheck: 'invalid' as any}), /forward-check/);
+});
+
 test('limits are inconclusive; malformed trees/options fail explicitly', () => {
   const p = convexHull(simplex(3));
   for (const options of [{maxNodes: 0}, {maxNodes: 1}, {timeoutMs: 0}]) {
@@ -411,9 +438,11 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp', '--hull-method', 'incremental']);
     assert.equal(cutoff.status, 0, String(cutoff.stderr));
     const original = JSON.parse(String(cutoff.stdout));
+    original.solveOptions.forwardCheck = true;
+    original.solveOptions.branchOrder = 'constrained';
     assert.equal(original.result.status, 'inconclusive');
     const name = 'trial-000123-seed-0.json';
-    writeFileSync(join(source, name), String(cutoff.stdout));
+    writeFileSync(join(source, name), JSON.stringify(original));
     // Other statuses must be ignored, without needing their point arrays.
     writeFileSync(join(source, 'trial-found.json'), JSON.stringify({result: {status: 'found'}}));
     writeFileSync(join(source, 'trial-candidate.json'), JSON.stringify({result: {status: 'no-unfolding'}}));
@@ -444,6 +473,9 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(saved.solveOptions.root, 1);
     assert.equal(saved.solveOptions.stopAfterFirst, false);
     assert.equal(saved.solveOptions.pruneOverlaps, false);
+    assert.equal(saved.solveOptions.forwardCheck, true);
+    assert.equal(saved.solveOptions.branchOrder, 'constrained');
+    assert.equal(saved.result.searchOptions.forwardCheck, false, '--no-prune disables forward checking');
     assert.equal(saved.result.exhaustive, true);
     assert.equal(saved.result.stats.completeTrees, 16);
     assert.deepEqual(readdirSync(source).map(name => [name, readFileSync(join(source, name), 'utf8')]), before);
@@ -454,7 +486,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.match(String(empty.stderr), /No inconclusive trials/);
     assert.equal(existsSync(emptyOutput), false);
     const limitedOutput = join(directory, 'limited');
-    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--output', limitedOutput]);
+    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--forward-check', 'off', '--branch-order', 'bottleneck', '--no-force-bridges', '--output', limitedOutput]);
     assert.equal(limited.status, 0, String(limited.stderr));
     const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
     const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
@@ -465,6 +497,9 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(limitedSaved.solveOptions.overlapTolerance, 1e-9);
     assert.equal(limitedSaved.solveOptions.root, 0);
     assert.equal(limitedSaved.solveOptions.overlapMethod, 'gjk-lp');
+    assert.equal(limitedSaved.solveOptions.forwardCheck, false);
+    assert.equal(limitedSaved.solveOptions.branchOrder, 'bottleneck');
+    assert.equal(limitedSaved.solveOptions.forceBridges, false);
     const again = cli(['retry', limitedRun]);
     assert.equal(again.status, 0, String(again.stderr));
     assert.equal(JSON.parse(String(again.stdout)).status, 'found');

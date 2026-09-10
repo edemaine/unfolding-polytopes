@@ -13,6 +13,7 @@
     "timings": "civet src/cli.civet timings",
     "bench": "civet bench/overlap.civet",
     "bench:hull": "civet bench/hull.civet",
+    "bench:search": "civet bench/search.civet",
     "bench:compare": "civet bench/compare.civet",
     "bench:select-sampled": "civet bench/select-sampled.civet",
     "bench:sampled": "civet bench/sampled.civet",

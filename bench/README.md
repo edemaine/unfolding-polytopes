@@ -60,6 +60,28 @@ Compares incremental hull construction with enumeration on all 43 sampled and te
 
 Writes `output/hull-results.json` with all timings and candidate-plane work counts.
 
+## Search heuristics
+
+```sh
+pnpm bench:search
+# Optionally compare against an earlier solver module:
+pnpm bench:search path/to/reference/src/solver.civet
+```
+
+Uses the ten completed fixtures and three difficult 4D random examples (9 points/seed 88516, 10/53826, 11/17273). Compares bridge propagation, forward checking, their combination, and three branch orders with adaptive forward checking. Each search has a 50,000-node / 2-second cap. Three rounds rotate method order; times exclude hull construction and witness validation.
+
+Every distinct returned tree is redeveloped and all facet pairs are checked with `enumerate`, including direct hinge pairs. Different orders can return different valid witnesses and visit different numbers of nodes. Completeness is tested separately by exhaustive solution-count comparisons in `pnpm test`.
+
+Writes `output/search-results.json`. The optional reference must export `solve` with compatible input and result geometry; it is timed on the same precomputed hulls. A cutoff is not a completed reference timing.
+
+To reproduce the comparison with the solver before forward checking and bridge propagation, prepare revision `82f1d0b` using Bash:
+
+```sh
+mkdir -p bench/output/search-reference
+git archive 82f1d0b src | tar -x -C bench/output/search-reference
+pnpm bench:search bench/output/search-reference/src/solver.civet
+```
+
 ## Comparing revisions
 
 ```sh
@@ -68,17 +90,42 @@ pnpm bench:compare path/to/reference/src
 
 Loads a reference source tree alongside the current code. Both use incremental hulls and `dual-lp`. Compares exact hull data, search counts, witness trees, and overlap counters on the sampled and completed fixtures, plus 4D/5D cubes and cross polytopes. Completed fixtures run without cutoffs; other searches have an 80-node cap. Hulls and completed searches are timed separately over five repetitions after warmup, alternating version order.
 
-Writes `output/optimization-results.json`. The reference must support the current hull and solver APIs. For the optimization comparison below, prepare the reference with these Bash commands:
-
-```sh
-mkdir -p bench/output/reference
-git archive eb10196 src | tar -x -C bench/output/reference
-pnpm bench:compare bench/output/reference/src
-```
+Writes `output/optimization-results.json`. The reference must support the current hull and solver APIs. This strict comparison is for changes that preserve search order and pruning. Different search algorithms can legitimately change counts and witnesses; use `bench:search` for those comparisons. The earlier LP-buffer/hull comparison below used revision `eb10196` as its reference.
 
 ## Results
 
 Measurements from September 10, 2026, using Node v24.11.0. Search times include placement, pruning, and intersection tests, but exclude hull construction and startup. Each table compares methods on the same inputs within one benchmark run. Times are in **milliseconds** unless stated otherwise; short timings are sensitive to machine load.
+
+### Search pruning and branch order
+
+Three difficult 4D examples, with medians over three repetitions. Each cell gives **nodes / milliseconds**. Adaptive forward checking begins after `2 * facets` visited nodes. All three adaptive orders use bridge propagation and the branch-local placement/check cache.
+
+| Points | Seed | Adaptive, ridge index | Adaptive, constrained (default) | Adaptive, bottleneck | Always forward-check, ridge index |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 9 | 88516 | 68 / 11.94 | 30 / 1.80 | 24 / 1.63 | 26 / 3.55 |
+| 10 | 53826 | 80 / 16.26 | 72 / 9.22 | 86 / 21.60 | 29 / 3.50 |
+| 11 | 17273 | 77 / 6.02 | 41 / 2.62 | 39 / 3.03 | 37 / 4.34 |
+
+The previous solver reached a 50,000-node or 2-second cutoff on every repetition of these examples without finding a witness. These are capped comparisons, not measurements of its full completion time. With forward checking disabled, bridge propagation found witnesses in 5,762 nodes and 77 nodes for the 9- and 11-point cases; the 10-point case still timed out.
+
+The ten completed fixtures measure the cost on easier examples. Sum of per-case median search times:
+
+| Configuration | Milliseconds |
+| --- | ---: |
+| Previous solver | 507.21 |
+| Bridge propagation, no forward checking | 442.59 |
+| Always forward checking and bridges, ridge index | 1080.73 |
+| Adaptive, ridge index | 420.14 |
+| Adaptive, constrained | 409.86 |
+| Adaptive, bottleneck | 728.78 |
+
+Constrained ordering gives a useful balance on this sample. Always-on forward checking helps the difficult cases but adds work on easy descents. The bottleneck heuristic occasionally saves nodes, but its repeated graph searches cost more on larger hulls. These timings were measured with other jobs running; small differences need further samples.
+
+Every distinct returned witness passed all-pairs intersection enumeration. Exhaustive tests also compare solution counts for every combination of branch order, forward-check mode, and bridge propagation against complete-tree overlap checking on small examples.
+
+Instrumentation of the previous solver's first 50,000 nodes found that length-2/3 paths between tested facets accounted for 10–14% of pair checks, with 196–245 distinct such paths per example. Direct hinge-parent tests accounted for 7–11% of LP calls. The new search skips those parent tests and retains candidate placements/check prefixes only within the active recursion stack; it has no cache accumulating paths from all previously visited trees.
+
+The following tables measure earlier algorithm versions, before these search changes.
 
 ### Fixed examples
 

@@ -85,14 +85,31 @@ The implementation uses floating-point geometry, not exact predicates or certifi
 ## Algorithm
 
 1. **Convex hull:** incrementally insert points into a triangulated boundary, then merge coplanar pieces into true facets. Two facets are adjacent exactly when their intersection has affine dimension $d-2$. See [Hull construction](#hull-construction).
-2. **Tree search:** fix one root facet and branch on the first undecided ridge leaving the connected set of placed facets. Either attach its unplaced neighbor or forbid that ridge. Internal edges cannot be selected because they would create cycles. Every spanning tree determines exactly one sequence of these choices. A fixed root loses no unfoldings: changing the root changes only the global Euclidean placement.
+2. **Tree search:** fix one root facet and branch on an undecided ridge leaving the connected set of placed facets. Either attach its unplaced neighbor or forbid that ridge. Internal edges cannot be selected because they would create cycles. Every spanning tree determines exactly one sequence of these choices, regardless of branch order. A fixed root loses no unfoldings: changing the root changes only the global Euclidean placement.
 3. **Development:** compute an orthonormal basis along the shared ridge and a perpendicular inward direction in each incident facet. Preserve the ridge pointwise and map the child's inward direction to the negative of the parent's inward direction. This gives an affine isometry into $\mathbb R^{d-1}$ without dimension-specific rotation formulas.
-4. **Intersection:** test whether each newly placed facet overlaps the interior of an already placed facet in $\mathbb R^{d-1}$. The default solves a linear program for the common interior margin. Boundary contact is allowed; see [Intersection algorithms](#intersection-algorithms) for the available methods and their tolerance checks.
-5. **Pruning:** if a new facet overlaps an already placed facet, discard that branch. Descendant attachments cannot change the existing placements. Also discard branches whose remaining ridges cannot connect all facets.
+4. **Intersection:** test whether each newly placed facet overlaps the interior of an already placed facet in $\mathbb R^{d-1}$. Skip its direct hinge parent: convexity places their interiors on opposite sides of the hinge. Originally adjacent facets whose shared ridge is cut still need testing. The default solves a linear program for the common interior margin. Boundary contact is allowed; see [Intersection algorithms](#intersection-algorithms) for the available methods and their tolerance checks.
+5. **Pruning and propagation:** discard overlapping attachments and disconnected branches. Contract the placed facets into one graph vertex, retaining parallel edges. A bridge leaving that vertex must belong to every completion, so attach it without an exclusion branch. Forward checking tests every frontier attachment against the placed facets and forbids overlapping attachments throughout the current branch. Existing placements cannot change in descendants, so these exclusions remain valid. Recheck connectivity and bridges after these exclusions.
+
+The search caches candidate placements and the prefix of placed facets they have passed. Descendants check only newly placed facets; sibling branches retain their own checked prefixes. Cache entries belong to the active recursion stack and disappear on backtracking, so memory does not grow with the number of previously searched trees.
 
 There is no dimension-specific upper bound. Hull construction can produce exponentially many faces, and spanning-tree counts grow exponentially. The default intersection method uses the simplex algorithm; its enumeration fallback examines up to $\binom md$ linear systems for $m$ combined bounding halfspaces. Start with few vertices and inspect facet counts. Higher dimension can make the computation much harder even if counterexamples are easier to find.
 
 All computational limits default to `Infinity` for both `solve` and `search`. Set `--max-hull-combinations`, `--max-nodes`, or `--timeout-ms` to impose a limit. Node and time limits apply **per polytope** to tree search, excluding hull construction. A hull cutoff is an error, never an exhausted unfolding search. Time checks are cooperative, including during intersection enumeration.
+
+### Search options
+
+| Option | Behavior |
+| --- | --- |
+| `--forward-check auto` (default) | Start checking all frontier attachments after visiting more than twice as many nodes as facets. Easy first descents avoid this extra work. |
+| `--forward-check on` / `off` | Always check the frontier / check only the chosen attachment. |
+| `--no-force-bridges` | Disable forced bridge attachments; connectivity pruning remains enabled. |
+| `--branch-order constrained` (default) | Prefer an unplaced facet with the fewest remaining incident ridges. Break ties by ridge ID. |
+| `--branch-order index` | Choose the first eligible ridge by ID. |
+| `--branch-order bottleneck` | Prefer the ridge whose removal gives the longest shortest alternative route to its unplaced facet. Break ties by degree, then ridge ID. This requires more graph searches. |
+
+Every order tries attachment before exclusion. `--no-prune` also disables forward checking and checks all pairs at complete trees, including hinge pairs. Bridge propagation still preserves exhaustive tree counts. The API equivalents are `forwardCheck: 'auto' | true | false`, `forceBridges: boolean`, and `branchOrder`. Runs save these settings, and retries preserve them unless overridden.
+
+Results include the effective `searchOptions` and `searchStats`: placement constructions and cache reuses, previously checked pairs reused, direct-parent checks skipped, forward-check exclusions, forced attachments, and graph checks. Search-node and prune counts can change with these options; compare exhaustive solution counts when checking completeness.
 
 ## Hull construction
 
@@ -246,6 +263,7 @@ The benchmarks measure speed while checking that changing hull or intersection m
 | `pnpm bench` | Compare overlap decisions against `enumerate` on sampled facet pairs, then compare search counts and witness trees with a 120-node cap. | [Fixed examples](bench/README.md) |
 | `pnpm bench:sampled` | Sample parameters and seeds from saved runs; compare pair decisions and searches with a 40-node cap. Also check rotated boxes against analytic thresholds for separation, contact, and thin overlap. | [Sampled examples](bench/README.md#sampled-examples) |
 | `pnpm bench:completed` | Rerun saved successful examples to completion, comparing search counts and witness trees. Time full searches and profile search alone and hull construction plus search. | [Completed searches and CPU profiles](bench/README.md#completed-searches-and-profiling) |
+| `pnpm bench:search` | Compare forward checking, forced bridges, and branch orders on completed fixtures and difficult 4D examples. Check every distinct witness with intersection enumeration. | [Search heuristics](bench/README.md#search-heuristics) |
 
 The benchmark case lists contain exact coordinates and numerical settings, so the suites run without local trial files. Generated measurements and reports go under the ignored `bench/output/` directory. `pnpm bench:select-sampled` updates the committed sampled case list from local runs; see [benchmark instructions](bench/README.md) for selecting inputs and generating reports.
 
