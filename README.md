@@ -39,6 +39,10 @@ Input JSON is either an array of points `[[x0, x1, ...], ...]` or an object with
 
 Summary obtains retry dimensions and point counts from saved task generators, falling back to source-run metadata for older retries. This also works before a retry finishes its first trial. If a retry mixes parameters, only values shared by every task are shown; differing or unknown values appear as `-`. This lookup does not read trial coordinate files.
 
+The **Retry coverage** column identifies work resolved in other runs: `complete (+804; 0 left)` means other runs resolved 804 additional trials and every planned trial now has a `found` or `no-unfolding` result. `partial (+200; 604 left)` means unresolved work remains. Worker state, saved-attempt counts, and original statuses still describe the original run. An error, an inconclusive result, or a merely planned retry does not resolve a trial.
+
+Coverage follows explicit source-file links in task manifests and journals, including retry chains and missing trials resumed directly from an earlier source. Multiple retries of the same trial count once per source run. JSON exposes each run's `retryCoverage`, including contributing run directories. Only runs inside the requested summary directory contribute results; use `pnpm summary results` to include sibling retries. Identical seeds alone do not establish coverage, and missing provenance can leave coverage unknown. This uses metadata and journals, without additional coordinate-file reads.
+
 ```sh
 pnpm summary                         # All runs under results, recursively
 pnpm summary results/run-XXXXXX      # One run (or any results subdirectory)

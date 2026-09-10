@@ -2,6 +2,8 @@
 import {readFileSync, readdirSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {hostname} from 'node:os';
+import {retryCoverage} from './retry-coverage.civet';
+import type {CoverageRun, RetryCoverage} from './retry-coverage.civet';
 
 export interface Counts {
   trials: number;
@@ -25,6 +27,7 @@ export interface RunSummary extends Counts {
   finished: boolean;
   state: 'finished' | 'running' | 'interrupted' | 'unknown';
   pid: number | null;
+  retryCoverage: RetryCoverage;
 }
 
 export interface ResultsSummary {
@@ -66,6 +69,8 @@ function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
 export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
   const directory = resolve(path);
   const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
+  const coverageRuns: CoverageRun[] = [];
+  const retryLinks: [string, string][] = [];
   type Parameters = {dimension: number | null; points: number | null};
   const unknown: Parameters = {dimension: null, points: null};
   const sourceParameters = new Map<string, Parameters>();
@@ -122,8 +127,11 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
         expected, remaining: expected === null ? null : Math.max(0, expected - trials.length),
         finished: files.has('summary.json'),
         state: files.has('summary.json') ? 'finished' : workerState(metadata.worker),
-        pid: Number.isSafeInteger(metadata.worker?.pid) && metadata.worker.pid > 0 ? metadata.worker.pid : null
+        pid: Number.isSafeInteger(metadata.worker?.pid) && metadata.worker.pid > 0 ? metadata.worker.pid : null,
+        retryCoverage: {resolved: 0, remaining: expected, viaRetries: 0, complete: false, directories: []}
       };
+      const coverageRun = {directory: current, expected, metadata, saved: new Set(trials), resolved: new Set<string>()};
+      coverageRuns.push(coverageRun);
       const journal = new Map<string, any>();
       if (files.has('trials.jsonl')) {
         let invalid = 0;
@@ -159,6 +167,8 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
           continue;
         }
         run[key]++;
+        if (row.status === 'found' || row.status === 'no-unfolding') coverageRun.resolved.add(name);
+        if (typeof row.sourceFile === 'string') retryLinks.push([join(current, name), row.sourceFile]);
         observeTrial?.(run, row, metadata);
         if (row.status === 'inconclusive' && row.termination === 'timeout') run.timeouts++;
         if (row.status === 'inconclusive' && row.termination === 'maxNodes') run.nodeLimits++;
@@ -171,6 +181,8 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
     for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) scan(join(current, entry.name));
   }
   scan(directory);
+  const coverage = retryCoverage(coverageRuns, retryLinks);
+  for (const run of result.runs) run.retryCoverage = coverage.get(run.directory)!;
   result.runs.sort((a, b) => compareParameter(a.dimension, b.dimension) || compareParameter(a.points, b.points)
     || (a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0));
   for (const run of result.runs) {
@@ -191,16 +203,18 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
 export function formatSummary(summary: ResultsSummary): string {
   const t = summary.totals;
   const lines = [`Results: ${summary.directory}`, ''];
-  const rows = [['Run', 'Kind', 'd', 'Points', 'Saved/Planned', 'Found', 'Candidate', 'Inconcl.', 'Error', 'Unread.', 'State']];
-  const row = (label: string, kind: string, dimension: number | null, points: number | null, c: Counts, expected: number | null, state: string): string[] => [
+  const rows = [['Run', 'Kind', 'd', 'Points', 'Saved/Planned', 'Found', 'Candidate', 'Inconcl.', 'Error', 'Unread.', 'State', 'Retry coverage']];
+  const row = (label: string, kind: string, dimension: number | null, points: number | null, c: Counts, expected: number | null, state: string, coverage = '-'): string[] => [
     label, kind, String(dimension ?? '-'), String(points ?? '-'), `${c.trials}/${expected ?? '?'}`,
-    String(c.found), String(c.candidates), String(c.inconclusive), String(c.errors), String(c.unreadable), state
+    String(c.found), String(c.candidates), String(c.inconclusive), String(c.errors), String(c.unreadable), state, coverage
   ];
   let offset = 0;
   for (const group of summary.groups) {
     for (const run of summary.runs.slice(offset, offset + group.runCount)) {
       const state = run.state === 'running' ? `running (PID ${run.pid})` : run.state;
-      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, state));
+      const c = run.retryCoverage;
+      const coverage = c.viaRetries ? `${c.complete ? 'complete' : 'partial'} (+${c.viaRetries}${c.remaining === null ? '; ? left' : `; ${c.remaining} left`})` : '-';
+      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, state, coverage));
     }
     offset += group.runCount;
     if (group.runCount > 1) {
@@ -215,6 +229,7 @@ export function formatSummary(summary: ResultsSummary): string {
   lines.push(...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));
   if (summary.warnings.length) lines.push('', ...summary.warnings.map(w => `Warning: ${w}`));
   lines.push('', `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
+    'Retry coverage: found/candidate results in other scanned runs resolve source trials; +N counts additional resolved trials. Worker state and original counts are unchanged.',
     `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${(t.searchMs / 1000).toFixed(1)}s.`);
   return lines.join('\n') + '\n';
 }

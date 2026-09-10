@@ -812,6 +812,61 @@ test('summary resolves retry parameters from tasks and source metadata without t
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
 
+test('summary tracks completed retry chains, missing seeds, duplicates, and partial coverage', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-coverage-test-'));
+  try {
+    const make = (name: string, metadata: object): string => {
+      const path = join(directory, name); mkdirSync(path);
+      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
+      return path;
+    };
+    const record = (directory: string, file: string, status: string, sourceFile?: string): void => {
+      // Only the journal may be read; geometry is deliberately unavailable.
+      writeFileSync(join(directory, file), 'not coordinate JSON');
+      const path = join(directory, 'trials.jsonl');
+      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file, status, sourceFile}) + '\n');
+    };
+    const original = make('original', {command: 'search', seed: 10, trials: 4, generator: {family: 'random', dimension: 4, count: 10}});
+    const names = [0, 1, 2, 3].map(i => trialName(i, 10 + i));
+    record(original, names[0], 'found'); record(original, names[1], 'inconclusive');
+    const first = make('first', {command: 'retry', trials: 3, tasks: names.slice(1).map(name => ({name, sourceFile: join(original, name)}))});
+    record(first, names[1], 'inconclusive', join(original, names[1]));
+    const later = make('later', {command: 'retry', trials: 3, tasks: [
+      {name: 'trial-a.json', sourceFile: join(first, names[1])},
+      // Resume the original source directly, bypassing the interrupted retry.
+      {name: 'trial-b.json', sourceFile: join(original, names[2])},
+      {name: 'trial-c.json', sourceFile: join(original, names[3])}
+    ]});
+    record(later, 'trial-a.json', 'found'); record(later, 'trial-b.json', 'no-unfolding');
+    record(later, 'trial-c.json', 'error');
+    const duplicate = make('duplicate', {command: 'retry', trials: 1, sourceFiles: [join(original, names[1])]});
+    record(duplicate, names[1], 'found');
+    const unrelated = make('unrelated', {command: 'search', seed: 10, trials: 4, generator: {family: 'random', dimension: 4, count: 10}});
+    record(unrelated, names[3], 'found');
+    let report = summarizeResults(directory);
+    const coverage = (path: string) => report.runs.find(run => run.directory === path)!.retryCoverage;
+    assert.equal(coverage(original).resolved, 3); assert.equal(coverage(original).viaRetries, 2);
+    assert.equal(coverage(original).remaining, 1); assert.equal(coverage(original).complete, false);
+    assert.deepEqual(coverage(original).directories, [duplicate, later].sort());
+    assert.equal(coverage(first).viaRetries, 2); assert.equal(coverage(first).remaining, 1);
+    assert.equal(coverage(unrelated).viaRetries, 0);
+    assert.equal(report.totals.unreadable, 0);
+    assert.match(formatSummary(report), /partial \(\+2; 1 left\)/);
+    // A journal entry without its trial file cannot complete missing work.
+    writeFileSync(join(later, 'trials.jsonl'), readFileSync(join(later, 'trials.jsonl'), 'utf8') + JSON.stringify({file: 'trial-absent.json', status: 'found', sourceFile: join(original, names[3])}) + '\n');
+    assert.equal(summarizeResults(directory).runs.find(run => run.directory === original)!.retryCoverage.complete, false);
+    record(later, 'trial-c.json', 'found');
+    report = summarizeResults(directory);
+    assert.equal(coverage(original).complete, true); assert.equal(coverage(original).viaRetries, 3);
+    assert.equal(coverage(first).complete, true); assert.equal(coverage(first).viaRetries, 3);
+    assert.equal(report.runs.find(run => run.directory === original)!.finished, false);
+    assert.equal(report.runs.find(run => run.directory === original)!.inconclusive, 1);
+    assert.match(formatSummary(report), /complete \(\+3; 0 left\)/);
+    // Restricting the scan cannot claim coverage from unscanned siblings.
+    assert.equal(summarizeResults(original).runs[0].retryCoverage.viaRetries, 0);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
+});
+
 test('summary sorts numeric parameters, aggregates matching runs, and puts totals below groups', () => {
   const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-groups-'));
   try {
