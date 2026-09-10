@@ -532,6 +532,7 @@ test('timings group parameters, separate cutoffs, and measure cumulative tails',
     assert.ok(defaults.groups.every(g => !g.outcome.includes('timeout')));
     assert.ok(defaults.totals.every(g => !g.outcome.includes('timeout')));
     const found = report.totals.find(g => g.outcome === 'found')!;
+    assert.ok('minMs' in found);
     assert.equal(found.count, 13);
     assert.equal(found.minMs, 0); assert.equal(found.maxMs, 86400001);
     assert.equal(found.medianMs, 1001); assert.equal(found.p90Ms, 86400000);
@@ -555,6 +556,37 @@ test('timings group parameters, separate cutoffs, and measure cumulative tails',
     assert.equal(inherited.parameters.distribution, 'sphere');
     const empty = join(directory, 'empty'); mkdirSync(empty);
     assert.match(formatTimings(summarizeTimings(empty)), /No recorded search timings/);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('node distributions read journals and fallback files without requiring timings', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-nodes-test-'));
+  try {
+    writeFileSync(join(directory, 'run.json'), JSON.stringify({generator: {family: 'random', dimension: 4, count: 9}}));
+    const values = [0, 1000, 1001, 1000000, 1000001, 1000000000, 1000000001, 1.5, null];
+    const rows = values.map((nodes, i) => {
+      const file = `trial-${i}.json`;
+      writeFileSync(join(directory, file), 'indexed file must not be parsed');
+      return {file, status: 'found', nodes};
+    });
+    writeFileSync(join(directory, 'trials.jsonl'), rows.map(row => JSON.stringify(row)).join('\n'));
+    writeFileSync(join(directory, 'trial-fallback.json'), JSON.stringify({result: {status: 'found', stats: {nodes: 2}}}));
+    writeFileSync(join(directory, 'trial-cutoff.json'), JSON.stringify({result: {status: 'inconclusive', termination: 'timeout', stats: {nodes: 99}}}));
+    const report = summarizeTimings(directory, false, false, true), total = report.totals[0];
+    assert.equal(report.metric, 'nodes');
+    assert.ok('minNodes' in total);
+    assert.equal(total.count, 8); assert.equal(total.minNodes, 0); assert.equal(total.maxNodes, 1000000001);
+    assert.equal(total.medianNodes, 1001);
+    assert.deepEqual([total.overThousand, total.overMillion, total.overBillion], [5, 3, 1]);
+    assert.equal(report.missingNodes, 2); assert.equal(report.omittedTimeouts, 1);
+    assert.ok(!('minMs' in total));
+    assert.match(formatTimings(report), /Min.*Median.*Max.*>1K.*>1M.*>1B/);
+    const result = cli(['timings', directory, '--nodes', '--json']);
+    assert.equal(result.status, 0, String(result.stderr));
+    assert.deepEqual(JSON.parse(String(result.stdout)), JSON.parse(JSON.stringify(report)));
+    assert.equal(summarizeTimings(directory, false, true, true).totals.length, 2);
   } finally {
     rmSync(directory, {recursive: true, force: true});
   }

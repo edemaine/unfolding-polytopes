@@ -63,7 +63,7 @@ function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
 
 // Count saved attempts, including retries separately. Journals avoid parsing
 // large coordinate files, but only rows with an existing trial file count.
-export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
+export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
   const directory = resolve(path);
   const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
   function scan(current: string): void {
@@ -108,7 +108,7 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
           try {
             const saved = JSON.parse(readFileSync(join(current, name), 'utf8'));
             row = {file: name, sourceFile: saved?.sourceFile, generator: saved?.generator, status: saved?.error !== undefined ? 'error' : saved?.result?.status,
-              termination: saved?.result?.termination, elapsedMs: saved?.result?.stats?.elapsedMs};
+              termination: saved?.result?.termination, elapsedMs: saved?.result?.stats?.elapsedMs, nodes: saved?.result?.stats?.nodes};
           } catch {
             run.unreadable++;
             result.warnings.push(`Cannot parse ${join(current, name)} (possibly still being written).`);

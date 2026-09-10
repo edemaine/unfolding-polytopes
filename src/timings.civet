@@ -17,29 +17,55 @@ export interface TimingDistribution {
   overHour: number;
   overDay: number;
 }
-export interface TimingGroup extends TimingDistribution {
+export interface NodeDistribution {
+  count: number;
+  totalNodes: number;
+  minNodes: number;
+  medianNodes: number;
+  p90Nodes: number;
+  p99Nodes: number;
+  p999Nodes: number;
+  maxNodes: number;
+  overThousand: number;
+  overMillion: number;
+  overBillion: number;
+}
+interface GroupParameters {
   directory?: string;
   dimension: number | null;
   points: number | null;
   outcome: string;
   parameters: {family?: string; distribution?: string; scales?: number[]; weight?: number};
 }
+export type TimingGroup = GroupParameters & (TimingDistribution | NodeDistribution);
 export interface TimingReport {
+  metric: 'time' | 'nodes';
   directory: string;
   byRun: boolean;
   includeTimeouts: boolean;
   omittedTimeouts: number;
   groups: TimingGroup[];
-  totals: (TimingDistribution & {outcome: string})[];
+  totals: ((TimingDistribution | NodeDistribution) & {outcome: string})[];
   savedAttempts: number;
-  missingTimes: number;
+  missingTimes?: number;
+  missingNodes?: number;
   unreadable: number;
   warnings: string[];
 }
 
-function distribution(values: number[]): TimingDistribution {
+function distribution(values: number[], nodes: boolean): TimingDistribution | NodeDistribution {
   values.sort((a, b) => a - b);
   const percentile = (p: number): number => values[Math.ceil(p * values.length) - 1];
+  if (nodes) {
+    const result: NodeDistribution = {count: values.length, totalNodes: 0, minNodes: values[0], medianNodes: percentile(.5), p90Nodes: percentile(.9), p99Nodes: percentile(.99), p999Nodes: percentile(.999), maxNodes: values.at(-1)!, overThousand: 0, overMillion: 0, overBillion: 0};
+    for (const value of values) {
+      result.totalNodes += value;
+      if (value > 1000) result.overThousand++;
+      if (value > 1000000) result.overMillion++;
+      if (value > 1000000000) result.overBillion++;
+    }
+    return result;
+  }
   const result: TimingDistribution = {count: values.length, totalMs: 0, minMs: values[0], medianMs: percentile(.5), p90Ms: percentile(.9), p99Ms: percentile(.99), p999Ms: percentile(.999), maxMs: values.at(-1)!, overSecond: 0, overMinute: 0, overHour: 0, overDay: 0};
   for (const value of values) {
     result.totalMs += value;
@@ -51,8 +77,8 @@ function distribution(values: number[]): TimingDistribution {
   return result;
 }
 
-export function summarizeTimings(path = 'results', byRun = false, includeTimeouts = false): TimingReport {
-  const groups = new Map<string, Omit<TimingGroup, keyof TimingDistribution> & {values: number[]}>();
+export function summarizeTimings(path = 'results', byRun = false, includeTimeouts = false, nodes = false): TimingReport {
+  const groups = new Map<string, GroupParameters & {values: number[]}>();
   const totals = new Map<string, number[]>();
   const generators = new Map<string, {common: any; tasks: Map<string, any>}>();
   const sources = new Map<string, any>();
@@ -71,8 +97,8 @@ export function summarizeTimings(path = 'results', byRun = false, includeTimeout
   let omittedTimeouts = 0;
   // Reuse summary's journal deduplication, saved-file checks, and fallback reader.
   const summary = summarizeResults(path, (run, row, metadata) => {
-    const value = row.elapsedMs;
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) { missingTimes++; return; }
+    const value = nodes ? row.nodes : row.elapsedMs;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || nodes && !Number.isSafeInteger(value)) { missingTimes++; return; }
     if (!includeTimeouts && row.termination === 'timeout') { omittedTimeouts++; return; }
     let outcome = row.status;
     if (row.termination === 'timeout') { outcome = row.status === 'found' ? 'found/timeout' : 'timeout'; }
@@ -107,10 +133,10 @@ export function summarizeTimings(path = 'results', byRun = false, includeTimeout
   });
   const compare = (a: number | null, b: number | null): number => a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
   const ordered = [...groups.values()].sort((a, b) => compare(a.dimension, b.dimension) || compare(a.points, b.points) || JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters)) || (a.directory ?? '').localeCompare(b.directory ?? '') || a.outcome.localeCompare(b.outcome));
-  return {directory: summary.directory, byRun, includeTimeouts, omittedTimeouts,
-    groups: ordered.map(({values, ...group}) => ({...group, ...distribution(values)})),
-    totals: [...totals].sort(([a], [b]) => a.localeCompare(b)).map(([outcome, values]) => ({outcome, ...distribution(values)})),
-    savedAttempts: summary.totals.trials, missingTimes, unreadable: summary.totals.unreadable, warnings: summary.warnings};
+  return {directory: summary.directory, metric: nodes ? 'nodes' : 'time', byRun, includeTimeouts, omittedTimeouts,
+    groups: ordered.map(({values, ...group}) => ({...group, ...distribution(values, nodes)})),
+    totals: [...totals].sort(([a], [b]) => a.localeCompare(b)).map(([outcome, values]) => ({outcome, ...distribution(values, nodes)})),
+    savedAttempts: summary.totals.trials, ...(nodes ? {missingNodes: missingTimes} : {missingTimes}), unreadable: summary.totals.unreadable, warnings: summary.warnings};
 }
 
 function duration(ms: number): string {
@@ -122,9 +148,12 @@ function duration(ms: number): string {
 }
 
 export function formatTimings(report: TimingReport): string {
-  const header = [...(report.byRun ? ['Run'] : []), 'd', 'Points', 'Parameters', 'Outcome', 'N', 'Min', 'Median', 'P90', 'P99', 'P99.9', 'Max', '>1s', '>1m', '>1h', '>1d'];
+  const nodes = report.metric === 'nodes';
+  const header = [...(report.byRun ? ['Run'] : []), 'd', 'Points', 'Parameters', 'Outcome', 'N', 'Min', 'Median', 'P90', 'P99', 'P99.9', 'Max', ...(nodes ? ['>1K', '>1M', '>1B'] : ['>1s', '>1m', '>1h', '>1d'])];
   const rows: string[][] = [header];
-  const cells = (g: TimingDistribution): string[] => [String(g.count), ...[g.minMs, g.medianMs, g.p90Ms, g.p99Ms, g.p999Ms, g.maxMs].map(duration), ...[g.overSecond, g.overMinute, g.overHour, g.overDay].map(String)];
+  const cells = (g: TimingDistribution | NodeDistribution): string[] => 'minNodes' in g
+    ? [String(g.count), ...[g.minNodes, g.medianNodes, g.p90Nodes, g.p99Nodes, g.p999Nodes, g.maxNodes].map(n => n.toLocaleString('en-US')), ...[g.overThousand, g.overMillion, g.overBillion].map(String)]
+    : [String(g.count), ...[g.minMs, g.medianMs, g.p90Ms, g.p99Ms, g.p999Ms, g.maxMs].map(duration), ...[g.overSecond, g.overMinute, g.overHour, g.overDay].map(String)];
   for (const group of report.groups) {
     const p = group.parameters;
     const parameters = (p.family === 'random' ? p.distribution : p.family) ?? '?';
@@ -134,12 +163,12 @@ export function formatTimings(report: TimingReport): string {
   if (report.groups.length) { rows.push(Array(header.length).fill('')); rows.push(header); }
   for (const total of report.totals) rows.push([...(report.byRun ? ['TOTAL'] : []), report.byRun ? '-' : 'TOTAL', '-', '-', total.outcome, ...cells(total)]);
   const widths = header.map((_, i) => Math.max(...rows.map(row => row[i].length)));
-  const lines = [`Search timings: ${report.directory}`, '', ...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()), '',
-    'Times exclude hull construction. Tail counts are cumulative and strictly greater than each threshold.',
-    'Cutoffs are reported separately; their recorded durations are lower bounds on time to finish.',
+  const lines = [`Search ${nodes ? 'nodes' : 'timings'}: ${report.directory}`, '', ...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()), '',
+    nodes ? 'Nodes count visited tree-search states. Tail counts are cumulative and strictly greater than 1,000 / 1,000,000 / 1,000,000,000.' : 'Times exclude hull construction. Tail counts are cumulative and strictly greater than each threshold.',
+    nodes ? 'Cutoffs are reported separately; their node counts measure partial searches.' : 'Cutoffs are reported separately; their recorded durations are lower bounds on time to finish.',
     'Percentiles use nearest rank; P99.9 is the 99.9th percentile and may equal the maximum in small groups.',
-    `${report.savedAttempts} saved attempts; ${report.missingTimes} without valid timing; ${report.unreadable} unreadable. Retries count separately.`];
-  if (!report.groups.length) lines.push('No recorded search timings.');
+    `${report.savedAttempts} saved attempts; ${nodes ? report.missingNodes : report.missingTimes} without valid ${nodes ? 'node count' : 'timing'}; ${report.unreadable} unreadable. Retries count separately.`];
+  if (!report.groups.length) lines.push(nodes ? 'No recorded search node counts.' : 'No recorded search timings.');
   if (report.omittedTimeouts) lines.push(`${report.omittedTimeouts} timed-out attempts omitted; use --include-timeouts to show them.`);
   if (report.warnings.length) lines.push('', ...report.warnings.map(w => `Warning: ${w}`));
   return lines.join('\n') + '\n';

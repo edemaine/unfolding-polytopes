@@ -21,8 +21,8 @@ retry     Resume missing trials and rerun inconclusive trials into one new run.
           Reuse saved points and settings; reset all work limits to Infinity.
           Explicit solver/geometry options override saved settings.
 summary   Summarize runs recursively in a directory (default results).
-timings   Search-time percentiles and tail counts (default results).
-          --by-run keeps individual runs separate; --json exports milliseconds.
+timings   Search-time or --nodes percentiles and tail counts (default results).
+          --by-run keeps individual runs separate; --json exports raw values.
 
 Generation options:
   --family NAME        random (default), simplex, cube, cross, cyclic, hypersimplex
@@ -50,6 +50,7 @@ Output and search options:
   --json               Machine-readable summary or timings instead of a text table
   --by-run             Separate timing distributions for each run
   --include-timeouts   Include timed-out attempts in timing reports
+  --nodes              Report search-node counts instead of times
   --trials N           Number of random polytopes in search (default 100)
   --help               Show this help
 
@@ -59,7 +60,7 @@ Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
 const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
-const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts']);
+const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes']);
 
 function main(args: string[]): void {
   const flags = new Map<string, string>();
@@ -83,8 +84,8 @@ function main(args: string[]): void {
   const [command, file] = positional;
   if (!['generate', 'solve', 'search', 'retry', 'summary', 'timings'].includes(command) || positional.length > (command === 'retry' ? Infinity : ['solve', 'summary', 'timings'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
   if (command === 'timings') {
-    for (const name of flags.keys()) if (!['json', 'output', 'by-run', 'include-timeouts'].includes(name)) throw new Error(`--${name} does not apply to timings.`);
-    const report = summarizeTimings(file ?? 'results', flags.has('by-run'), flags.has('include-timeouts'));
+    for (const name of flags.keys()) if (!['json', 'output', 'by-run', 'include-timeouts', 'nodes'].includes(name)) throw new Error(`--${name} does not apply to timings.`);
+    const report = summarizeTimings(file ?? 'results', flags.has('by-run'), flags.has('include-timeouts'), flags.has('nodes'));
     const text = flags.has('json') ? JSON.stringify(report, null, 2) + '\n' : formatTimings(report);
     if (flags.has('output')) { writeFileSync(flags.get('output')!, text); }
     else { process.stdout.write(text); }
@@ -92,6 +93,7 @@ function main(args: string[]): void {
   }
   if (flags.has('by-run')) throw new Error('--by-run only applies to timings.');
   if (flags.has('include-timeouts')) throw new Error('--include-timeouts only applies to timings.');
+  if (flags.has('nodes')) throw new Error('--nodes only applies to timings.');
   if (command === 'summary') {
     for (const name of flags.keys()) if (!['json', 'output'].includes(name)) throw new Error(`--${name} does not apply to summary.`);
     const summary = summarizeResults(file ?? 'results');

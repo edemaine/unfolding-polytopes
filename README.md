@@ -210,6 +210,7 @@ pnpm timings                         # Group all saved attempts by generation pa
 pnpm timings results/retry-XXXXXX     # One run or any results subdirectory
 pnpm timings --by-run                 # Keep individual runs separate
 pnpm timings --include-timeouts       # Show timed-out attempts too
+pnpm timings --nodes                  # Node-count distributions instead of times
 pnpm timings --json --output timings.json
 ```
 
@@ -219,7 +220,9 @@ Groups distinguish dimension, point count, generator family, distribution, axis 
 
 Times measure **tree search only**, excluding hull construction and file writes. Successful searches and exhausted candidates are separate outcomes. Timed-out attempts are omitted by default from both group rows and overall timing totals; `--include-timeouts` shows them. Node cutoffs remain visible. Cutoffs have separate rows, including limited runs that already found a witness: their recorded times do not measure an exhaustive search. Active trials have no saved timing yet. There is no combined percentile mixing cutoffs with completed searches.
 
-The command shares `summary`'s reader: it parses compact journals, keeps the last row for each trial filename, ignores entries without a saved trial file, and reads individual trial JSON only for missing or invalid journal entries. Missing/invalid durations and unreadable records are counted separately. Existing files with valid journal rows are not opened. The report is a snapshot while jobs are running.
+`--nodes` reports the same group and overall percentiles for **visited search nodes**, with cumulative counts over **1,000, 1 million, and 1 billion nodes**. Counts remain exact integers in the table, with comma separators. JSON identifies `metric: "nodes"` and uses fields such as `minNodes`, `p999Nodes`, and `maxNodes`; time reports identify `metric: "time"` and retain their millisecond fields. Timeout filtering and `--by-run` apply to either metric. Node counts can be present even when elapsed times are missing.
+
+The command shares `summary`'s reader: it parses compact journals, keeps the last row for each trial filename, ignores entries without a saved trial file, and reads individual trial JSON only for missing or invalid journal entries. Missing/invalid measurements and unreadable records are counted separately. Existing files with valid journal rows are not opened. The report is a snapshot while jobs are running.
 
 ## Tests and benchmarks
 
