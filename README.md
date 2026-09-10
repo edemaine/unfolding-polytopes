@@ -88,13 +88,20 @@ Resume unfinished runs and rerun inconclusive examples:
 ```sh
 pnpm retry results/run-XXXXXX
 pnpm retry results/run-XXXXXX results/run-YYYYYY
+pnpm retry results/run-XXXXXX --dry-run
+# Include retries stored elsewhere:
+pnpm retry results/run-XXXXXX --coverage-root results
 # Optional new limits or tolerance:
-pnpm retry results/run-XXXXXX --timeout-ms 60000 --overlap-tolerance 1e-10
+pnpm retry results/run-XXXXXX --ignore-coverage --timeout-ms 60000 --overlap-tolerance 1e-10
 ```
 
 `retry` compares each run's planned trials with its saved `trial-*.json` filenames and uses the compact `trials.jsonl` journal to select inconclusive examples. It reads full trial JSON only for selected examples or files missing from the journal, avoiding large coordinate-file reads for indexed completed trials. Missing or truncated journals fall back to those trial files; stale aggregate `summary.json` totals are not used for selection. For each input directory it first fills missing seeds (including gaps), then reruns records with `result.status: "inconclusive"`. Found unfoldings, candidates, and recorded errors are already attempted and are skipped. Missing random trials are regenerated from the saved generator settings; existing trials reuse their exact points. Tolerances, root, and search settings are preserved, with **all computational limits reset to Infinity** unless explicitly supplied. Solver/geometry flags override saved settings.
 
 It writes one fresh `retry-*` directory under the first input directory's parent; `--output` changes the parent directory. A single input preserves trial filenames; multiple inputs use new sequential filenames to avoid collisions. Each record has a `sourceFile` path to its original trial (which may be absent for a missing seed). Repeated directory arguments are processed once. Original runs are untouched. The new run saves a task manifest, so if it is interrupted, pass **that retry directory** to `retry` to continue its remaining tasks. Older retry runs are also supported using their saved source-file lists. To avoid duplicating work, stop a source job before resuming it; selection is a snapshot, not a live handoff. If there is no missing or inconclusive work, no directory is created. Malformed trial JSON encountered during these reads is reported as an error; indexed completed files are not inspected.
+
+By default, retry selection also uses **retry coverage**: it skips trials with `found` or `no-unfolding` results elsewhere and selects each unresolved source trial only once across multiple input runs. It scans each input directory's parent recursively, using manifests and journals, so sibling retries and retry chains are included. `--coverage-root DIR` selects a different search root; the requested source runs are always included. Changing `--output` does not change the coverage scope.
+
+`--dry-run` prints selection counts, skipped resolved/duplicate counts, and scope directories without starting a job or creating a run. `--ignore-coverage` restores selection based only on the original runs; use it to deliberately recheck examples under different tolerances or search settings. Coverage means a witness or candidate exists, not that an exhaustive `--all` count has finished. Planned or still-inconclusive retries do not count as resolved. This remains a snapshot: two concurrent retry launches can still select the same unresolved work.
 
 To investigate a candidate or a cutoff, pass its saved trial JSON to `solve`. This reuses the **points**; specify the desired tolerances and budgets again:
 

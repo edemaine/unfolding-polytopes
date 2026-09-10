@@ -66,7 +66,7 @@ function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
 
 // Count saved attempts, including retries separately. Journals avoid parsing
 // large coordinate files, but only rows with an existing trial file count.
-export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
+export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void, collectCoverage?: (runs: CoverageRun[], links: [string, string][]) => void): ResultsSummary {
   const directory = resolve(path);
   const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
   const coverageRuns: CoverageRun[] = [];
@@ -139,7 +139,8 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
           if (!line.trim()) continue;
           try {
             const row = JSON.parse(line);
-            if (typeof row?.file !== 'string' || !statusKeys.has(row.status)) { invalid++; continue; }
+            if (typeof row?.file !== 'string' || !/^trial-[^\\/]+\.json$/.test(row.file)) { invalid++; continue; }
+            if (!statusKeys.has(row.status)) { journal.delete(row.file); invalid++; continue; }
             // Repeated rows describe the same saved attempt; keep the last.
             journal.set(row.file, row);
           } catch { invalid++; }
@@ -181,8 +182,9 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
     for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) scan(join(current, entry.name));
   }
   scan(directory);
+  collectCoverage?.(coverageRuns, retryLinks);
   const coverage = retryCoverage(coverageRuns, retryLinks);
-  for (const run of result.runs) run.retryCoverage = coverage.get(run.directory)!;
+  for (const run of result.runs) run.retryCoverage = coverage.runs.get(run.directory)!;
   result.runs.sort((a, b) => compareParameter(a.dimension, b.dimension) || compareParameter(a.points, b.points)
     || (a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0));
   for (const run of result.runs) {

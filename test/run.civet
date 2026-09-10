@@ -552,7 +552,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.match(String(empty.stderr), /No inconclusive trials/);
     assert.equal(existsSync(emptyOutput), false);
     const limitedOutput = join(directory, 'limited');
-    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--forward-check', 'off', '--branch-order', 'bottleneck', '--no-force-bridges', '--output', limitedOutput]);
+    const limited = cli(['retry', source, '--ignore-coverage', '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--forward-check', 'off', '--branch-order', 'bottleneck', '--no-force-bridges', '--output', limitedOutput]);
     assert.equal(limited.status, 0, String(limited.stderr));
     const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
     const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
@@ -566,11 +566,11 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(limitedSaved.solveOptions.forwardCheck, false);
     assert.equal(limitedSaved.solveOptions.branchOrder, 'bottleneck');
     assert.equal(limitedSaved.solveOptions.forceBridges, false);
-    const again = cli(['retry', limitedRun]);
+    const again = cli(['retry', limitedRun, '--ignore-coverage']);
     assert.equal(again.status, 0, String(again.stderr));
     assert.equal(JSON.parse(String(again.stdout)).status, 'found');
     const combinedOutput = join(directory, 'combined');
-    const combined = cli(['retry', source, limitedRun, source + '/.', run, '--max-nodes', '0', '--output', combinedOutput]);
+    const combined = cli(['retry', source, limitedRun, source + '/.', run, '--ignore-coverage', '--max-nodes', '0', '--output', combinedOutput]);
     assert.equal(combined.status, 0, String(combined.stderr));
     const combinedRows = String(combined.stdout).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(combinedRows.length, 2, 'Duplicate directories and successful trials must not be retried.');
@@ -583,7 +583,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.deepEqual(combinedSaved.map(saved => saved.hullOptions.tolerance), [1e-8, 1e-10]);
     assert.ok(combinedSaved.every(saved => saved.result.status === 'inconclusive'));
     assert.deepEqual(combinedSaved.map(saved => saved.points), [original.points, original.points]);
-    const combinedAgain = cli(['retry', combinedRun]);
+    const combinedAgain = cli(['retry', combinedRun, '--ignore-coverage']);
     assert.equal(combinedAgain.status, 0, String(combinedAgain.stderr));
     assert.ok(String(combinedAgain.stdout).trim().split('\n').map(line => JSON.parse(line)).every(row => row.status === 'found'));
     assert.deepEqual(readdirSync(source).map(name => [name, readFileSync(join(source, name), 'utf8')]), before);
@@ -1026,6 +1026,65 @@ test('automatic seeds respect matching reservations, explicit seeds, and concurr
   } finally {
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+test('retry selects only uncovered work, deduplicates sources, and supports preview and scope overrides', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-coverage-'));
+  try {
+    const local = join(directory, 'local'); mkdirSync(local);
+    const make = (parent: string, name: string, metadata: object): string => {
+      const path = join(parent, name); mkdirSync(path);
+      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata)); return path;
+    };
+    const record = (directory: string, name: string, status: string, sourceFile?: string, body = 'must not be parsed'): void => {
+      writeFileSync(join(directory, name), body);
+      const path = join(directory, 'trials.jsonl');
+      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status, sourceFile}) + '\n');
+    };
+    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 3, seed: 10, distribution: 'sphere', scales: [1, 1]};
+    const original = make(local, 'original', {command: 'search', seed: 10, trials: 4, generator});
+    const names = [0, 1, 2, 3].map(i => trialName(i, 10 + i));
+    const saved = {...generatedInput({...generator, seed: 11}), hullOptions: {}, solveOptions: {}, result: {status: 'inconclusive', overlapTolerance: 1e-8}};
+    record(original, names[0], 'found'); record(original, names[1], 'inconclusive', undefined, JSON.stringify(saved));
+    const first = make(local, 'first', {command: 'retry', trials: 3, tasks: names.slice(1).map((name, i) => ({name, sourceFile: join(original, name), generator: {...generator, seed: 11 + i}, hullOptions: {}, solveOptions: {}}))});
+    record(first, names[1], 'inconclusive', join(original, names[1]), JSON.stringify(saved));
+    const later = make(local, 'later', {command: 'retry', trials: 2, tasks: [
+      {name: 'trial-a.json', sourceFile: join(first, names[1])},
+      {name: 'trial-b.json', sourceFile: join(original, names[2])}
+    ]});
+    record(later, 'trial-a.json', 'found'); record(later, 'trial-b.json', 'no-unfolding');
+    const elsewhere = make(directory, 'elsewhere', {command: 'retry', trials: 1});
+    record(elsewhere, 'trial-other.json', 'found', join(original, names[3]));
+    const preview = (...args: string[]) => {
+      const result = cli(['retry', ...args, '--dry-run']);
+      assert.equal(result.status, 0, String(result.stderr)); return JSON.parse(String(result.stdout));
+    };
+    const before = readdirSync(local);
+    const selection = preview(original, first);
+    assert.equal(selection.trials, 1); assert.equal(selection.missing, 1);
+    assert.equal(selection.inconclusive, 0); assert.equal(selection.skippedResolved, 4);
+    assert.equal(selection.skippedDuplicates, 1);
+    assert.deepEqual(readdirSync(local), before);
+    assert.equal(preview(original, '--coverage-root', directory).trials, 0);
+    assert.equal(preview(original, '--ignore-coverage').trials, 3);
+    // Filtering must happen before legacy missingTasks opens the absent source.
+    const legacy = make(local, 'legacy', {command: 'retry', trials: 1, sourceFiles: [join(original, names[2])]});
+    assert.equal(preview(legacy).trials, 0);
+    const retried = cli(['retry', original, first, '--max-nodes', '0']);
+    assert.equal(retried.status, 0, String(retried.stderr));
+    const rows = String(retried.stdout).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(rows.length, 1); assert.equal(rows[0].seed, 13);
+    const run = join(local, readdirSync(local).find(name => name.startsWith('retry-'))!);
+    const finished = cli(['retry', run]);
+    assert.equal(finished.status, 0, String(finished.stderr));
+    assert.equal(JSON.parse(String(finished.stdout)).status, 'found');
+    const after = readdirSync(local);
+    const empty = cli(['retry', original]);
+    assert.equal(empty.status, 0, String(empty.stderr));
+    assert.equal(String(empty.stdout), '');
+    assert.deepEqual(readdirSync(local), after);
+    assert.match(String(empty.stderr), /No inconclusive trials or missing trials remain/);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
 });
 
 test('retry uses journal statuses without opening indexed completed trials', () => {

@@ -57,7 +57,7 @@ export function generatedInput(generator: GeneratorSpec): {points: Vector[]; gen
 
 // Describe unexecuted tasks without allocating their point sets. New retries
 // persist these descriptors, so an interrupted retry is itself resumable.
-export function missingTasks(directory: string, files: Set<string>): TrialTask[] {
+export function missingTasks(directory: string, files: Set<string>, include: (name: string) => boolean = () => true): TrialTask[] {
   if (!existsSync(join(directory, 'run.json'))) return [];
   const run = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'));
   if (Array.isArray(run.tasks)) {
@@ -66,14 +66,14 @@ export function missingTasks(directory: string, files: Set<string>): TrialTask[]
       if (typeof task.name !== 'string' || !/^trial-[^\\/]+\.json$/.test(task.name) || names.has(task.name)) throw new Error(`Invalid task names in ${join(directory, 'run.json')}`);
       names.add(task.name);
     }
-    return run.tasks.filter((t: TrialTask) => !files.has(t.name));
+    return run.tasks.filter((t: TrialTask) => !files.has(t.name) && include(t.name));
   }
   if (Array.isArray(run.sourceFiles)) {
     // Compatibility with retry runs written before task manifests existed.
     const multiple = (run.sourceDirectories?.length ?? 1) > 1;
     return run.sourceFiles.flatMap((sourceFile: string, i: number) => {
       const name = multiple ? `trial-${String(i).padStart(6, '0')}.json` : basename(sourceFile);
-      if (files.has(name)) return [];
+      if (files.has(name) || !include(name)) return [];
       const saved = JSON.parse(readFileSync(sourceFile, 'utf8'));
       const old = run.overrides ?? {};
       const hullOptions = {...saved.hullOptions};
@@ -92,7 +92,7 @@ export function missingTasks(directory: string, files: Set<string>): TrialTask[]
   for (let i = 0; i < run.trials; i++) {
     const seed = run.seed + i;
     const name = trialName(i, seed);
-    if (!files.has(name)) tasks.push({name, sourceFile: join(directory, name), seed,
+    if (!files.has(name) && include(name)) tasks.push({name, sourceFile: join(directory, name), seed,
       generator: {...run.generator, seed}, hullOptions: run.hullOptions ?? {}, solveOptions: run.solveOptions ?? {}});
   }
   return tasks;

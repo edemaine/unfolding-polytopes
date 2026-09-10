@@ -21,7 +21,7 @@ const trial = (name: unknown): name is string => typeof name === 'string' && /^t
 
 // Index only trials mentioned by retries. Ordinary successful trials need no
 // global graph entries, and neither this pass nor its callers read coordinates.
-export function retryCoverage(runs: CoverageRun[], links: [string, string][]): Map<string, RetryCoverage> {
+export function retryCoverage(runs: CoverageRun[], links: [string, string][]) {
   const parents = new Map<string, string>();
   function root(path: string): string {
     if (!parents.has(path)) parents.set(path, path);
@@ -91,5 +91,13 @@ export function retryCoverage(runs: CoverageRun[], links: [string, string][]): M
     coverage.complete = run.expected !== null && coverage.resolved === run.expected;
     coverage.directories = [...directories.get(run)!].sort();
   }
-  return result;
+  return {
+    runs: result,
+    identity: (file: string): string => { const path = key(file); return parents.has(path) ? root(path) : path; },
+    isResolved: (file: string): boolean => {
+      const path = key(file);
+      return byDirectory.get(key(dirname(path)))?.resolved.has(basename(path)) === true ||
+        parents.has(path) && winners.has(root(path));
+    }
+  };
 }

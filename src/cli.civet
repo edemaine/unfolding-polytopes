@@ -1,6 +1,6 @@
 "civet esCompat";
 import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
-import {dirname, join, resolve} from 'node:path';
+import {dirname, join, resolve, sep} from 'node:path';
 import {hostname} from 'node:os';
 import {branchOrders, hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
@@ -9,6 +9,8 @@ import {formatSummary, summarizeResults} from './summary.civet';
 import {formatTimings, summarizeTimings} from './timings.civet';
 import {trialJSON} from './storage.civet';
 import {compactResults} from './compact.civet';
+import {retryCoverage} from './retry-coverage.civet';
+import type {CoverageRun} from './retry-coverage.civet';
 import {missingTasks, nextSearchSeed, taskInput, trialName, trialStatuses, withSeedLock} from './jobs.civet';
 import type {GeneratorSpec, TrialTask} from './jobs.civet';
 
@@ -61,6 +63,10 @@ Output and search options:
   --full-output        Include developed placements and pretty-print trial JSON
                        (automatic for no-unfolding counterexample candidates)
   --dry-run            Preview compact savings without changing files
+                       or preview retry selection without starting a run
+  --coverage-root DIR  Look for retry results under DIR (default source parents)
+  --ignore-coverage    Retry original missing/inconclusive trials regardless of
+                       results in other runs (retry only)
   --trials N           Number of random polytopes in search (default 100)
   --help               Show this help
 
@@ -69,8 +75,8 @@ Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (lim
 Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
-const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order']);
-const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges', 'full-output', 'dry-run']);
+const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order', 'coverage-root']);
+const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges', 'full-output', 'dry-run', 'ignore-coverage']);
 
 function main(args: string[]): void {
   const flags = new Map<string, string>();
@@ -99,7 +105,9 @@ function main(args: string[]): void {
     console.log(JSON.stringify(report));
     return;
   }
-  if (flags.has('dry-run')) throw new Error('--dry-run only applies to compact.');
+  if (flags.has('dry-run') && command !== 'retry') throw new Error('--dry-run only applies to compact or retry.');
+  for (const name of ['coverage-root', 'ignore-coverage']) if (flags.has(name) && command !== 'retry') throw new Error(`--${name} only applies to retry.`);
+  if (flags.has('coverage-root') && flags.has('ignore-coverage')) throw new Error('--coverage-root and --ignore-coverage cannot be combined.');
   if (flags.has('full-output') && !['solve', 'search', 'retry'].includes(command)) throw new Error('--full-output only applies to solve, search, or retry.');
   if (command === 'timings') {
     for (const name of flags.keys()) if (!['json', 'output', 'by-run', 'include-timeouts', 'nodes'].includes(name)) throw new Error(`--${name} does not apply to timings.`);
@@ -217,6 +225,34 @@ function main(args: string[]): void {
     const selected: TrialTask[] = [];
     let missing = 0;
     let inconclusive = 0;
+    let skippedResolved = 0, skippedDuplicates = 0;
+    const canonical = (path: string): string => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+    const roots = (flags.has('coverage-root') ? [realpathSync(flags.get('coverage-root')!)] : sourceDirectories.map(path => dirname(path)));
+    // Include the selected sources even when an explicit coverage root is elsewhere.
+    const allRoots = [...new Set([...roots, ...sourceDirectories].map(canonical))].sort((a, b) => a.length - b.length);
+    const coverageDirectories: string[] = [];
+    for (const root of allRoots) if (!coverageDirectories.some(parent => root === parent || root.startsWith(parent.endsWith(sep) ? parent : parent + sep))) coverageDirectories.push(root);
+    let coverage: ReturnType<typeof retryCoverage> | undefined;
+    if (!flags.has('ignore-coverage')) {
+      const runs: CoverageRun[] = [], links: [string, string][] = [];
+      console.error(`Checking retry coverage in ${coverageDirectories.join(', ')}`);
+      for (const root of coverageDirectories) {
+        const summary = summarizeResults(root, undefined, (r, l) => {
+          for (const run of r) runs.push(run);
+          for (const link of l) links.push(link);
+        });
+        for (const warning of summary.warnings) console.error(warning);
+      }
+      coverage = retryCoverage(runs, links);
+    }
+    const selectedIdentities = new Set<string>();
+    const include = (file: string): boolean => {
+      if (coverage?.isResolved(file)) { skippedResolved++; return false; }
+      const id = coverage?.identity(file) ?? canonical(file);
+      if (coverage && selectedIdentities.has(id)) { skippedDuplicates++; return false; }
+      selectedIdentities.add(id);
+      return true;
+    };
     const enqueue = (task: TrialTask, effectiveOverlap?: number): void => {
       const usedHull: HullOptions = {
         method: flags.has('hull-method') ? hullOptions.method : task.hullOptions.method ?? hullOptions.method,
@@ -243,7 +279,7 @@ function main(args: string[]): void {
       const {statuses, invalidRows} = trialStatuses(sourceDirectory);
       if (invalidRows) console.error(`${sourceDirectory}: ignored ${invalidRows} invalid journal rows; checking unindexed trial files.`);
       // Finish unattempted seeds before revisiting potentially expensive cutoffs.
-      for (const task of missingTasks(sourceDirectory, files)) { enqueue(task); missing++; }
+      for (const task of missingTasks(sourceDirectory, files, name => include(join(sourceDirectory, name)))) { enqueue(task); missing++; }
       // Completed indexed trials need no coordinate-file reads. Verify selected
       // trials and inspect unindexed files in case the journal was not flushed.
       for (const entry of entries) {
@@ -251,15 +287,23 @@ function main(args: string[]): void {
         const status = statuses.get(entry.name);
         if (status !== undefined && status !== 'inconclusive') continue;
         const sourceFile = join(sourceDirectory, entry.name);
+        if (status === 'inconclusive' && !include(sourceFile)) continue;
+        if (status === undefined && coverage?.isResolved(sourceFile)) { skippedResolved++; continue; }
         const saved = JSON.parse(readFileSync(sourceFile, 'utf8'));
         if (saved?.result?.status !== 'inconclusive') continue;
+        if (status === undefined && !include(sourceFile)) continue;
         enqueue({input: {points: saved.points, generator: saved.generator}, name: entry.name,
           generator: saved.generator, seed: saved.generator?.seed, sourceFile,
           hullOptions: saved.hullOptions ?? {tolerance: saved.polytope?.tolerance}, solveOptions: saved.solveOptions ?? {}}, saved.result.overlapTolerance);
         inconclusive++;
       }
     }
-    if (!selected.length) { console.error(`No inconclusive trials or missing trials in ${sourceDirectories.join(', ')}`); return; }
+    if (skippedResolved || skippedDuplicates) console.error(`Skipped ${skippedResolved} resolved trials and ${skippedDuplicates} duplicate selections.`);
+    if (flags.has('dry-run')) {
+      console.log(JSON.stringify({sourceDirectories, coverageDirectories: coverage ? coverageDirectories : [], trials: selected.length, missing, inconclusive, skippedResolved, skippedDuplicates}));
+      return;
+    }
+    if (!selected.length) { console.error(`No inconclusive trials or missing trials remain in ${sourceDirectories.join(', ')}`); return; }
     console.error(`Retrying ${inconclusive} inconclusive trials and resuming ${missing} missing trials from ${sourceDirectories.join(', ')}`);
     jobs = selected;
     metadata = {command, sourceDirectory: sourceDirectories.length === 1 ? sourceDirectories[0] : undefined,
