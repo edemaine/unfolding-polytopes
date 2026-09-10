@@ -1,9 +1,10 @@
 "civet esCompat";
-import {attachFacet, interiorOverlap, rootPlacement} from './unfold.civet';
-import type {Placement} from './unfold.civet';
+import {attachFacet, interiorOverlap, rootPlacement, overlapMethods} from './unfold.civet';
+import type {Placement, OverlapMethod, OverlapStats} from './unfold.civet';
 import type {Polytope} from './polytope.civet';
 
 export interface SolveOptions {
+  overlapMethod?: OverlapMethod;
   root?: number;
   maxNodes?: number;
   timeoutMs?: number;
@@ -19,6 +20,8 @@ export interface SolveResult {
   exhaustive: boolean;
   numerical: true;
   overlapTolerance: number;
+  overlapMethod: OverlapMethod;
+  overlapStats: OverlapStats;
   tree: number[] | null;
   placements: Placement[] | null;
   stats: {nodes: number; completeTrees: number; overlapPrunes: number; disconnectedPrunes: number; solutions: number; elapsedMs: number};
@@ -36,6 +39,9 @@ export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
   if (!(maxNodes >= 0) || (maxNodes !== Infinity && !Number.isSafeInteger(maxNodes))) throw new Error('maxNodes must be a nonnegative safe integer or Infinity.');
   if (!(timeoutMs >= 0) || Number.isNaN(timeoutMs)) throw new Error('timeoutMs must be nonnegative.');
   if (!(eps > 0 && Number.isFinite(eps))) throw new Error('overlapTolerance must be positive and finite.');
+  const overlapMethod = options.overlapMethod ?? 'dual-lp';
+  if (!overlapMethods.includes(overlapMethod)) throw new Error('Unknown overlap method.');
+  const overlapStats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
   const root = options.root ?? 0;
   const stats = {nodes: 0, completeTrees: 0, overlapPrunes: 0, disconnectedPrunes: 0, solutions: 0, elapsedMs: 0};
   const placed = new Map<number, Placement>([[root, rootPlacement(poly, root)]]);
@@ -66,7 +72,7 @@ export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
       const faces = [...placed.values()];
       if (options.pruneOverlaps === false) {
         for (let i = 0; i < faces.length; i++) {
-          for (let j = 0; j < i; j++) if (interiorOverlap(faces[i], faces[j], eps, poll)) return false;
+          for (let j = 0; j < i; j++) if (interiorOverlap(faces[i], faces[j], eps, poll, overlapMethod, overlapStats)) return false;
         }
       }
       stats.solutions++;
@@ -89,7 +95,7 @@ export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
     let overlaps = false;
     if (options.pruneOverlaps !== false) {
       for (const other of placed.values()) {
-        if (interiorOverlap(child, other, eps, poll)) { overlaps = true; break; }
+        if (interiorOverlap(child, other, eps, poll, overlapMethod, overlapStats)) { overlaps = true; break; }
       }
     }
     if (overlaps) { stats.overlapPrunes++; } else {
@@ -112,7 +118,7 @@ export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
   stats.elapsedMs = performance.now() - start;
   return {
     status: witnessTree ? 'found' : termination === 'exhausted' ? 'no-unfolding' : 'inconclusive',
-    termination, exhaustive: termination === 'exhausted', numerical: true, overlapTolerance: eps,
+    termination, exhaustive: termination === 'exhausted', numerical: true, overlapTolerance: eps, overlapMethod, overlapStats,
     tree: witnessTree, placements: witnessPlacements, stats
   };
 }

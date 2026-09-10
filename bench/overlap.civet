@@ -1,0 +1,45 @@
+"civet esCompat";
+import assert from 'node:assert/strict';
+import {writeReport} from './report.civet';
+import {writeFileSync, mkdirSync} from 'node:fs';
+import {convexHull, randomPoints, hypercube, rootPlacement, attachFacet, interiorOverlap, solve} from '../src/index.civet';
+import type {OverlapMethod, Placement} from '../src/index.civet';
+
+mkdirSync('bench/output', {recursive: true});
+const methods: OverlapMethod[] = ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'];
+const rows: object[] = [];
+for (const [d, n, seed] of [[3, 8, 1], [4, 10, 42], [5, 10, 42], [6, 12, 196], [4, 16, -1]]) {
+  const poly = convexHull(seed < 0 ? hypercube(d) : randomPoints(d, n, seed, 'sphere'));
+  const placements = new Map<number, Placement>([[0, rootPlacement(poly)]]);
+  const queue = [0];
+  for (let i = 0; i < queue.length; i++) {
+    for (const ridge of poly.facets[queue[i]].ridges) {
+      const child = attachFacet(poly, placements.get(queue[i])!, ridge);
+      if (!placements.has(child.facet)) { placements.set(child.facet, child); queue.push(child.facet); }
+    }
+  }
+  const faces = [...placements.values()], pairs: [Placement, Placement][] = [];
+  // Deterministic sample spread over the complete breadth-first development.
+  for (let i = 0; i < faces.length; i++) for (let j = 0; j <= i; j++) pairs.push([faces[i], faces[j]]);
+  const sample = pairs.filter((_, i) => i % Math.max(1, Math.floor(pairs.length / 200)) === 0);
+  const expected = sample.map(([a, b]) => interiorOverlap(a, b, 1.6e-8, undefined, 'enumerate'));
+  const reference = solve(poly, {maxNodes: 120, overlapMethod: 'enumerate'});
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < methods.length; i++) {
+      const method = methods[(i + round) % methods.length];
+      const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
+      let start = performance.now();
+      const actual = sample.map(([a, b]) => interiorOverlap(a, b, 1.6e-8, undefined, method, stats));
+      const pairMs = performance.now() - start;
+      assert.deepEqual(actual, expected, `${d}D ${method} pair mismatch`);
+      const result = solve(poly, {maxNodes: 120, overlapMethod: method});
+      assert.deepEqual({...result.stats, elapsedMs: 0}, {...reference.stats, elapsedMs: 0}, `${d}D ${method} search mismatch`);
+      assert.deepEqual(result.tree, reference.tree);
+      rows.push({d, points: n, seed, facets: poly.facets.length, method, round, pairs: sample.length, overlaps: actual.filter(Boolean).length, pairMs, pairStats: stats, solveMs: result.stats.elapsedMs, nodes: result.stats.nodes, status: result.status, solveStats: result.overlapStats});
+      console.log(`${d}D n=${n} seed=${seed} ${method} round=${round}: pairs ${pairMs.toFixed(1)}ms; search ${result.stats.elapsedMs.toFixed(1)}ms; fallbacks ${result.overlapStats.fallbacks}/${result.overlapStats.calls}`);
+    }
+  }
+}
+writeFileSync('bench/output/results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, platform: process.platform, note: 'Three rotated-order rounds; 120-node search cap; hull construction excluded. Other user jobs may compete for CPU.', rows}, null, 2) + '\n');
+writeReport();
+console.log('All pair decisions, search counts, and witness trees match. Results: bench/output/results.json');

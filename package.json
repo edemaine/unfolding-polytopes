@@ -4,12 +4,18 @@
   "type": "module",
   "scripts": {
     "test": "civet test/run.civet",
-    "check": "civet --typecheck src/cli.civet test/run.civet",
+    "check": "civet --typecheck",
     "solve": "civet src/cli.civet solve",
     "generate": "civet src/cli.civet generate",
     "search": "civet src/cli.civet search",
     "retry": "civet src/cli.civet retry",
-    "summary": "civet src/cli.civet summary"
+    "summary": "civet src/cli.civet summary",
+    "bench": "civet bench/overlap.civet",
+    "bench:select-sampled": "civet bench/select-sampled.civet",
+    "bench:sampled": "civet bench/sampled.civet",
+    "bench:sampled-report": "civet bench/sampled-report.civet",
+    "bench:completed": "civet bench/completed.civet",
+    "bench:completed-report": "civet bench/completed-report.civet"
   },
   "dependencies": {
     "@danielx/civet": "^0.11.16"

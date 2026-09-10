@@ -1,5 +1,6 @@
 "civet esCompat";
 import assert from 'node:assert/strict';
+import {linearProgram} from '../src/primal.civet';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -7,7 +8,7 @@ import {spawnSync} from 'node:child_process';
 import {convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from '../src/index.civet';
 import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/linalg.civet';
 import type {Vector} from '../src/linalg.civet';
-import type {Placement, Polytope} from '../src/index.civet';
+import type {Placement, Polytope, OverlapMethod} from '../src/index.civet';
 import {formatSummary, summarizeResults} from '../src/summary.civet';
 import {generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from '../src/jobs.civet';
 import type {GeneratorSpec} from '../src/jobs.civet';
@@ -72,6 +73,69 @@ function verify(poly: Polytope, tree: number[]): void {
     }
   }
 }
+
+test('custom LP returns primal values and row multipliers', () => {
+  for (const engine of [linearProgram]) {
+    const result = engine([[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], () => {});
+    assert.ok(result);
+    near(result.x, [2, 2]);
+    near(result.dual, [2, 1, 0]);
+    assert.equal(engine([[1], [-1]], [0, -1], [1], () => {}), null);
+  }
+});
+
+test('primal overlap backends: contact, thin overlaps, random pairs, and trees', () => {
+  const methods: OverlapMethod[] = ['primal-lp', 'gjk-lp', 'dual-lp'];
+  for (let k = 1; k <= 4; k++) {
+    const points = k === 1 ? [[-1], [1]] : hypercube(k);
+    const a = body(points);
+    for (const gap of [-0.1, -1e-6, -1e-9, 0, 1e-9, 1e-6, 0.1]) {
+      const b = body(points.map(p => p.map((x, j) => x + (j === 0 ? 2 + gap : 0))));
+      for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap(a, b, 1e-8, undefined, 'enumerate'), `${method}, k=${k}, gap=${gap}`);
+    }
+  }
+  for (let seed = 0; seed < 100; seed++) {
+    const a = body(randomPoints(2, 6, seed, 'sphere'));
+    const b = body(randomPoints(2, 7, seed + 200, 'sphere').map(p => p.map((x, j) => x + (j === 0 ? 1 : 0))));
+    for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), planarOverlap(a.coordinates, b.coordinates), `${method}, seed=${seed}`);
+  }
+  for (const k of [2, 3, 4, 5]) {
+    const a = body(simplex(k));
+    for (const shift of [0.1, 0.7, 1.4]) {
+      const b = body(simplex(k).map(p => p.map((x, j) => x + (j === 0 ? shift : 0))));
+      for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap(a, b, 1e-8, undefined, 'enumerate'));
+    }
+  }
+  const horizontal = body([[-3, -0.2], [3, -0.2], [3, 0.2], [-3, 0.2]]);
+  const vertical = body([[1, -1], [1.2, -1], [1.2, 5], [1, 5]]);
+  for (const method of methods) {
+    const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
+    assert.equal(interiorOverlap(horizontal, vertical, 1e-8, undefined, method, stats), true);
+    assert.equal(stats.primalWitnesses, 1);
+    assert.throws(() => interiorOverlap(horizontal, vertical, 1e-8, () => { throw new Error('poll'); }, method), /poll/);
+  }
+  // Max barycentric depth chooses ~(.909,.909), but the geometric optimum
+  // is (.5,.5). A shallow primal witness must not hide a deeper intersection.
+  const wide = body([[0, 0], [10, 0], [10, 1], [0, 1]]);
+  const tall = body([[0, 0], [1, 0], [1, 10], [0, 10]]);
+  for (const method of methods) {
+    const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
+    assert.equal(interiorOverlap(wide, tall, 0.2, undefined, method, stats), true);
+    if (!method.startsWith('dual-')) assert.equal(stats.fallbacks, 1);
+  }
+  // A diagonal shared edge has overlapping AABBs; neither center lies inside.
+  const a = body([[0, 0], [2, 0], [0, 2]]), b = body([[2, 0], [0, 2], [2, 2]]);
+  for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), false);
+  for (const points of [simplex(3), simplex(4), randomPoints(3, 6, 4, 'gaussian')]) {
+    const p = convexHull(points), reference = solve(p, {stopAfterFirst: false, overlapMethod: 'enumerate'});
+    for (const method of methods) {
+      const result = solve(p, {stopAfterFirst: false, overlapMethod: method});
+      assert.equal(result.stats.solutions, reference.stats.solutions);
+      assert.equal(result.stats.nodes, reference.stats.nodes);
+      assert.deepEqual(result.tree, reference.tree);
+    }
+  }
+});
 
 test('hull combinatorics in dimensions 2 through 6', () => {
   for (let d = 2; d <= 6; d++) {
@@ -146,6 +210,7 @@ test('isometric development and opposite hinge sides in dimensions 2–6', () =>
   for (const points of [hypercube(3), hypercube(4), prism(simplex(3)), pyramid(hypercube(3))]) {
     const p = convexHull(points);
     const result = solve(p);
+    assert.equal(result.overlapMethod, 'dual-lp');
     assert.equal(result.status, 'found'); verify(p, result.tree!);
   }
 });
@@ -262,7 +327,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
   try {
     const source = join(directory, 'source');
     mkdirSync(source);
-    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune']);
+    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp']);
     assert.equal(cutoff.status, 0, String(cutoff.stderr));
     const original = JSON.parse(String(cutoff.stdout));
     assert.equal(original.result.status, 'inconclusive');
@@ -291,6 +356,8 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
     assert.equal(saved.hullOptions.tolerance, 1e-8);
     assert.equal(saved.solveOptions.overlapTolerance, 1e-7);
+    assert.equal(saved.solveOptions.overlapMethod, 'dual-lp');
+    assert.equal(saved.result.overlapMethod, 'dual-lp');
     assert.equal(saved.solveOptions.root, 1);
     assert.equal(saved.solveOptions.stopAfterFirst, false);
     assert.equal(saved.solveOptions.pruneOverlaps, false);
@@ -304,7 +371,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.match(String(empty.stderr), /No inconclusive trials/);
     assert.equal(existsSync(emptyOutput), false);
     const limitedOutput = join(directory, 'limited');
-    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--output', limitedOutput]);
+    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--output', limitedOutput]);
     assert.equal(limited.status, 0, String(limited.stderr));
     const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
     const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
@@ -313,6 +380,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(limitedSaved.hullOptions.tolerance, 1e-10);
     assert.equal(limitedSaved.solveOptions.overlapTolerance, 1e-9);
     assert.equal(limitedSaved.solveOptions.root, 0);
+    assert.equal(limitedSaved.solveOptions.overlapMethod, 'gjk-lp');
     const again = cli(['retry', limitedRun]);
     assert.equal(again.status, 0, String(again.stderr));
     assert.equal(JSON.parse(String(again.stdout)).status, 'found');

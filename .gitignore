@@ -2,3 +2,5 @@ node_modules/
 results/
 *.tsbuildinfo
 .cache
+
+bench/output/

@@ -83,12 +83,66 @@ The implementation uses floating-point geometry, not exact predicates or certifi
 1. **Convex hull:** enumerate every $d$-subset of the input points. Affinely independent subsets define candidate supporting hyperplanes. Retain those with all points on one side, and merge candidates by their full set of coplanar point indices. Thus nonsimplicial facets remain intact. Two facets are adjacent exactly when their intersection has affine dimension $d-2$.
 2. **Tree search:** fix one root facet and branch on the first undecided ridge leaving the connected set of placed facets. Either attach its unplaced neighbor or forbid that ridge. Internal edges cannot be selected because they would create cycles. Every spanning tree determines exactly one sequence of these choices. A fixed root loses no unfoldings: changing the root changes only the global Euclidean placement.
 3. **Development:** compute an orthonormal basis along the shared ridge and a perpendicular inward direction in each incident facet. Preserve the ridge pointwise and map the child's inward direction to the negative of the parent's inward direction. This gives an affine isometry into $\mathbb R^{d-1}$ without dimension-specific rotation formulas.
-4. **Intersection:** express each developed facet as the intersection of halfspaces defined by its ridges. For a pair of facets, maximize $t$ subject to $n_i\cdot x+t\le b_i$ for all their unit outward normals. A positive optimum means interior intersection. Enumerate vertices of this linear program by choosing $d$ active constraints in its $d$ variables $(x,t)$. Bounding boxes and center tests provide shortcuts. This detects intersections even when neither facet contains a vertex of the other.
+4. **Intersection:** test whether each newly placed facet overlaps the interior of an already placed facet in $\mathbb R^{d-1}$. The default solves a linear program for the common interior margin. Boundary contact is allowed; see [Intersection algorithms](#intersection-algorithms) for the available methods and their tolerance checks.
 5. **Pruning:** if a new facet overlaps an already placed facet, discard that branch. Descendant attachments cannot change the existing placements. Also discard branches whose remaining ridges cannot connect all facets.
 
-There is no dimension-specific upper bound. The implementation is deliberately brute force: hull construction examines $\binom nd$ subsets, intersection of two facets with $m$ combined bounding halfspaces examines up to $\binom md$ linear systems, and spanning-tree counts grow exponentially. Start with few vertices and inspect facet counts. Higher dimension can make the computation much harder even if counterexamples are easier to find.
+There is no dimension-specific upper bound. Hull construction examines $inom nd$ subsets, and spanning-tree counts grow exponentially. The default intersection method uses the simplex algorithm; its enumeration fallback examines up to $inom md$ linear systems for $m$ combined bounding halfspaces. Start with few vertices and inspect facet counts. Higher dimension can make the computation much harder even if counterexamples are easier to find.
 
 All computational limits default to `Infinity` for both `solve` and `search`. Set `--max-hull-combinations`, `--max-nodes`, or `--timeout-ms` to impose a limit. Node and time limits apply **per polytope** to tree search, excluding hull construction. A hull cutoff is an error, never an exhausted unfolding search. Time checks are cooperative, including during intersection enumeration.
+
+## Intersection algorithms
+
+The intersection test asks whether two developed facets overlap in their **interiors** in $\mathbb R^{d-1}$. Shared boundaries are allowed. **`dual-lp` is the default** in the CLI and API.
+
+| Method | Representation | Algorithm |
+| --- | --- | --- |
+| `dual-lp` (default) | Halfspaces | Maximize the common interior margin using the custom two-phase simplex solver. |
+| `enumerate` | Halfspaces | Solve the same LP by enumerating sets of active constraints. Also serves as the reference and numerical fallback. |
+| `primal-lp` | Vertices | Find a common point expressed as strictly positive convex combinations of both vertex sets. |
+| `gjk-lp` | Vertices | Try GJK separation first, then resolve remaining pairs with the vertex LP. |
+
+Select a method with `--overlap-method` on `solve`, `search`, or `retry`, or with the API's `overlapMethod` option:
+
+```sh
+pnpm solve points.json --overlap-method enumerate
+pnpm retry results/run-XXXXXX --overlap-method dual-lp
+```
+
+```ts
+const result = solve(polytope, {overlapMethod: 'dual-lp'});
+```
+
+Saved trials and job manifests record the method. Retries preserve a saved method unless overridden; records without one use the default. Results include the chosen `overlapMethod` and `overlapStats` counters for calls, accepted witnesses, separation bounds, and enumeration fallbacks.
+
+All four methods first try bounding-box and facet-center shortcuts. They retain both vertex and halfspace data, and can detect intersections even when neither facet contains a vertex of the other. Numerical failures or inconclusive internal iterations use the enumeration fallback; only node or time limits can produce an `inconclusive` search status. These are floating-point decisions, not exact certificates.
+
+### Halfspace methods: `dual-lp` and `enumerate`
+
+Each facet is represented by inequalities $n_i\cdot x\le b_i$, with unit outward normals. Combining the inequalities of both facets gives the LP
+
+$$
+\max t \quad\text{subject to}\quad n_i\cdot x+t\le b_i\quad\text{for every }i.
+$$
+
+A positive optimum means interior overlap. The implementation requires a margin greater than `--overlap-tolerance`, which defaults to 16 times the hull tolerance in normalized coordinates.
+
+`dual-lp` solves this LP with the custom two-phase simplex solver, splitting the unrestricted coordinates and margin into positive and negative parts. It checks an overlap witness against the original inequalities. To rule out overlap, it checks an upper bound on the margin from nonnegative LP dual multipliers, accounting for residual normal error using the bounding box. An ambiguous result falls back to `enumerate`. The method name refers to the halfspace representation.
+
+`enumerate` chooses every set of $d$ active constraints in the $d$ variables $(x,t)$, solves the resulting linear system, and checks the candidate point against every inequality. It stops when it finds a point with sufficient margin. This is simple but expensive: up to $\binom md$ systems for $m$ combined inequalities.
+
+### Vertex methods: `primal-lp` and `gjk-lp`
+
+For matrices $V$ and $W$ whose columns are the two facets' vertices, `primal-lp` maximizes $\epsilon$ subject to
+
+$$
+V\alpha=W\beta,\qquad \sum_i\alpha_i=\sum_j\beta_j=1,\qquad
+\alpha_i\ge\epsilon,\quad\beta_j\ge\epsilon.
+$$
+
+Strictly positive weights characterize interior intersection for these full-dimensional facets, including nonsimplicial facets. However, the weight margin is not a geometric distance: the common point must also pass the halfspace margin check above. The LP's dual multipliers can yield a separating direction, checked directly against the vertices. If necessary, GJK searches for another separation bound before falling back to enumeration.
+
+`gjk-lp` reverses that order: GJK first searches for a separating direction using support queries on the Minkowski difference $A-B$. Its nearest-simplex calculation works in arbitrary dimension by enumerating simplex faces. Zero distance alone does not distinguish touching from interior overlap, so unresolved pairs go to the same vertex LP and geometric checks.
+
 
 ## Generators and API
 
@@ -124,4 +178,27 @@ The CLI supports the first six families, with `cube` and `cross` as family names
 
 Facet and ridge IDs are zero-based array indices. Facet vertex indices reference the original input array; facet vertices are **not cyclically ordered**. A returned `tree` is a list of uncut ridge IDs. Cut ridges may give multiple developed copies of the same input vertex, so each placement stores its own `vertices` and `coordinates` arrays. All API and saved placement coordinates use normalized units; multiply them by `polytope.scale` to restore original lengths. Placement maps act on `(inputPoint - polytope.center) / polytope.scale`.
 
-Tests cover hull incidence, nonsimplicial facets, dimensions 2–6, hinge continuity, isometries, boundary contact, crossing intersections, exhaustive tree counts, pruning against independent enumeration, an independent planar intersection test, seeded generators, and command-line replay and cutoffs. `pnpm check` type-checks source and tests without running them. TypeScript is pinned to the 5.x compiler API used by Civet; casing enforcement is disabled to accommodate Civet's virtual paths on Windows.
+## Tests and benchmarks
+
+The checks below test **the implementation of hull construction, facet placement, overlap detection, and tree search**. They do not prove the unfolding conjecture or certify a numerical counterexample.
+
+`pnpm test` checks:
+
+- **Hull and development geometry:** known facet/ridge counts, nonsimplicial facets, hinge continuity, and preservation of distances in dimensions 2–6.
+- **Overlap decisions:** containment, crossing intersections, boundary contact, and thin overlaps; agreement with an independent planar separating-axis test and with the enumeration method.
+- **Search completeness and pruning:** known spanning-tree counts and agreement between pruned searches, searches that test only complete trees, and independent small-case enumeration.
+- **Saved jobs:** reproducible generators, CLI options, limits, summaries, and retry/resume behavior.
+
+`pnpm check` type-checks the source, tests, and benchmark scripts without running them. TypeScript is pinned to the 5.x compiler API used by Civet; casing enforcement is disabled to accommodate Civet's virtual paths on Windows.
+
+The benchmarks measure speed while also checking that changing the intersection method preserves results:
+
+| Command | Correctness checks and timing workload | Report |
+| --- | --- | --- |
+| `pnpm bench` | Compare overlap decisions against `enumerate` on sampled facet pairs, then compare search counts and witness trees with a 120-node cap. | [Fixed examples](bench/README.md) |
+| `pnpm bench:sampled` | Sample parameters and seeds from saved runs; compare pair decisions and searches with a 40-node cap. Also check rotated boxes against analytic thresholds for separation, contact, and thin overlap. | [Sampled examples](bench/README.md#sampled-examples) |
+| `pnpm bench:completed` | Rerun saved successful examples to completion, comparing search counts and witness trees. Time full searches and profile search alone and hull construction plus search. | [Completed searches and CPU profiles](bench/README.md#completed-searches-and-profiling) |
+
+The benchmark case lists contain exact coordinates and numerical settings, so the suites run without local trial files. Generated measurements and reports go under the ignored `bench/output/` directory. `pnpm bench:select-sampled` updates the committed sampled case list from local runs; see [benchmark instructions](bench/README.md) for selecting inputs and generating reports.
+
+Agreement between methods is a regression check, not an independent proof: they share geometry code and may use the same fallback. The analytic and planar tests provide separate checks on overlap decisions. Benchmark timings depend on the selected examples and machine load; see each report for its workload and measurement details.

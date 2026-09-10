@@ -1,0 +1,19 @@
+"civet esCompat";
+import type {GeneratorSpec} from '../src/jobs.civet';
+import type {Vector} from '../src/linalg.civet';
+import type {HullOptions, SolveOptions} from '../src/index.civet';
+
+export interface BenchmarkCase {
+  generator: GeneratorSpec;
+  coordinates: Vector[];
+  hullOptions: HullOptions;
+  solveOptions: SolveOptions;
+  status: string;
+  savedNodes?: number;
+  savedMs?: number;
+}
+
+// Store the geometry and numerical settings, without local paths or budgets.
+export function benchmarkCase(generator: GeneratorSpec, coordinates: Vector[], hull: HullOptions = {}, solve: SolveOptions = {}, status = 'found', savedNodes?: number, savedMs?: number): BenchmarkCase {
+  return {generator, coordinates, hullOptions: {tolerance: hull.tolerance ?? 1e-9}, solveOptions: {root: solve.root ?? 0, overlapTolerance: solve.overlapTolerance ?? 16 * (hull.tolerance ?? 1e-9), pruneOverlaps: solve.pruneOverlaps ?? true, stopAfterFirst: solve.stopAfterFirst ?? true}, status, savedNodes, savedMs};
+}

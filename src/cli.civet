@@ -1,7 +1,7 @@
 "civet esCompat";
 import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
-import {convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
+import {overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
@@ -31,6 +31,7 @@ Generation options:
 
 Geometry and solver options:
   --tolerance X        Hull tolerance after normalization (default 1e-9)
+  --overlap-method NAME dual-lp (default), enumerate, primal-lp, gjk-lp
   --overlap-tolerance X  Interior margin in normalized units (default 16*tolerance)
   --max-hull-combinations N  Hull work limit (default Infinity)
   --max-nodes N        Tree search work limit (default Infinity)
@@ -50,7 +51,7 @@ Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (lim
 Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
-const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'overlap-tolerance', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
+const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
 const switches = new Set(['help', 'all', 'no-prune', 'json']);
 
 function main(args: string[]): void {
@@ -131,7 +132,10 @@ function main(args: string[]): void {
   if (command === 'generate') { output(generate(seed)); return; }
   const hullOptions: HullOptions = {tolerance: number('tolerance', 1e-9), maxCombinations: limit('max-hull-combinations', Infinity)};
   if (!(hullOptions.tolerance! > 0 && hullOptions.tolerance! < .01)) throw new Error('--tolerance must be between 0 and 0.01.');
+  const overlapMethod = flags.get('overlap-method') ?? 'dual-lp';
+  if (!(overlapMethods as readonly string[]).includes(String(overlapMethod))) throw new Error('Invalid --overlap-method.');
   const solveOptions: SolveOptions = {
+    overlapMethod: overlapMethod as SolveOptions['overlapMethod'],
     root: integer('root', 0, 0), maxNodes: limit('max-nodes', Infinity),
     timeoutMs: limit('timeout-ms', Infinity, false),
     overlapTolerance: flags.has('overlap-tolerance') ? number('overlap-tolerance', 0) : undefined,
@@ -174,6 +178,7 @@ function main(args: string[]): void {
       };
       const usedSolve: SolveOptions = {
         ...solveOptions,
+        overlapMethod: flags.has('overlap-method') ? solveOptions.overlapMethod : task.solveOptions.overlapMethod ?? solveOptions.overlapMethod,
         root: flags.has('root') ? solveOptions.root : task.solveOptions.root ?? solveOptions.root,
         overlapTolerance: flags.has('overlap-tolerance') ? solveOptions.overlapTolerance : task.solveOptions.overlapTolerance ?? effectiveOverlap,
         stopAfterFirst: flags.has('all') ? false : task.solveOptions.stopAfterFirst ?? true,

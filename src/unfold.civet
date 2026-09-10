@@ -1,6 +1,7 @@
 "civet esCompat";
 import {add, apply, combinations, dot, mean, mul, solveLinear, sub, unit} from './linalg.civet';
 import type {Matrix, Vector} from './linalg.civet';
+import {primalWitness, gjkSeparated, supportSeparates, halfspaceLP} from './primal.civet';
 import type {Polytope} from './polytope.civet';
 
 export interface Halfspace { normal: Vector; offset: number; }
@@ -62,7 +63,13 @@ export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number):
 // ensure an optimal vertex in (x,t); enumerate its k+1 active constraints.
 // This works in any dimension, including configurations where no vertex of
 // either facet lies in the other. Boundary contact is allowed.
-export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: () => void = () => {}): boolean {
+export const overlapMethods = ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'] as const;
+export type OverlapMethod = typeof overlapMethods[number];
+export interface OverlapStats { calls: number; primalWitnesses: number; supportSeparations: number; fallbacks: number; }
+
+export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: () => void = () => {}, method: OverlapMethod = 'dual-lp', stats?: OverlapStats): boolean {
+  if (stats) stats.calls++;
+  if (!overlapMethods.includes(method)) throw new Error('Unknown overlap method.');
   const k = a.min.length;
   if (b.min.length !== k) throw new Error('Cannot intersect different dimensions.');
   for (let i = 0; i < k; i++) {
@@ -71,6 +78,27 @@ export function interiorOverlap(a: Placement, b: Placement, tolerance: number, p
   const planes = [...a.halfspaces, ...b.halfspaces];
   const inside = (x: Vector): boolean => planes.every(p => p.offset - dot(p.normal, x) > tolerance);
   if (inside(mean(a.coordinates)) || inside(mean(b.coordinates))) return true;
+  if (method.startsWith('dual-')) {
+    const result = halfspaceLP(a, b, tolerance, poll);
+    if (result && inside(result.point)) { if (stats) stats.primalWitnesses++; return true; }
+    if (result?.separated) { if (stats) stats.supportSeparations++; return false; }
+    if (stats) stats.fallbacks++;
+  } else if (method !== 'enumerate') {
+    if (method.startsWith('gjk-') && gjkSeparated(a, b, tolerance, poll)) {
+      if (stats) stats.supportSeparations++; return false;
+    }
+    const witness = primalWitness(a, b, poll);
+    if (witness?.point && inside(witness.point)) { if (stats) stats.primalWitnesses++; return true; }
+    if (witness && supportSeparates(a, b, witness.direction, tolerance)) {
+      if (stats) stats.supportSeparations++; return false;
+    }
+    if (method.startsWith('primal-') && gjkSeparated(a, b, tolerance, poll)) {
+      if (stats) stats.supportSeparations++; return false;
+    }
+    // Barycentric and geometric margins differ. Retain the original geometric
+    // decision for shallow overlaps, failed pivots, or GJK stagnation.
+    if (stats) stats.fallbacks++;
+  }
   let iterations = 0;
   for (const ids of combinations(planes.length, k + 1)) {
     if ((iterations++ % 256) === 0) poll();

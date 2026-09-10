@@ -1,0 +1,159 @@
+"civet esCompat";
+import {dot, mean, sub, mul, solveLinear, combinations} from './linalg.civet';
+import type {Vector} from './linalg.civet';
+import type {Placement} from './unfold.civet';
+
+// Two-phase tableau simplex: maximize c.x, A.x <= b, x >= 0.
+// Bland's rule prevents cycling on degenerate (especially touching) inputs.
+export function linearProgram(A: number[][], b: number[], c: number[], poll: () => void): {x: number[]; dual: number[]} | null {
+  const m = b.length, n = c.length, eps = 1e-11;
+  const basic = Array.from({length: m}, (_, i) => n + i);
+  const nonbasic = Array.from({length: n + 1}, (_, i) => i === n ? -1 : i);
+  const t = Array.from({length: m + 2}, () => Array(n + 2).fill(0) as number[]);
+  for (let i = 0; i < m; i++) { for (let j = 0; j < n; j++) t[i][j] = A[i][j]; t[i][n] = -1; t[i][n + 1] = b[i]; }
+  for (let j = 0; j < n; j++) t[m][j] = -c[j];
+  t[m + 1][n] = 1;
+  function pivot(r: number, s: number): void {
+    const inv = 1 / t[r][s];
+    for (let i = 0; i < m + 2; i++) if (i !== r) {
+      for (let j = 0; j < n + 2; j++) if (j !== s) t[i][j] -= t[r][j] * t[i][s] * inv;
+    }
+    for (let j = 0; j < n + 2; j++) if (j !== s) t[r][j] *= inv;
+    for (let i = 0; i < m + 2; i++) if (i !== r) t[i][s] *= -inv;
+    t[r][s] = inv;
+    [basic[r], nonbasic[s]] = [nonbasic[s], basic[r]];
+  }
+  function phase(row: number): boolean {
+    for (let iteration = 0; iteration < 10000; iteration++) {
+      if (iteration % 32 === 0) poll();
+      let s = -1;
+      for (let j = 0; j <= n; j++) {
+        if (row === m && nonbasic[j] === -1) continue;
+        if (t[row][j] < -eps && (s < 0 || nonbasic[j] < nonbasic[s])) s = j;
+      }
+      if (s < 0) return true;
+      let r = -1;
+      for (let i = 0; i < m; i++) if (t[i][s] > eps) {
+        const delta = r < 0 ? -Infinity : t[i][n + 1] / t[i][s] - t[r][n + 1] / t[r][s];
+        if (r < 0 || delta < -eps || Math.abs(delta) <= eps && basic[i] < basic[r]) r = i;
+      }
+      if (r < 0) return false;
+      pivot(r, s);
+    }
+    return false; // Numerical failure: caller falls back, never declares separation.
+  }
+  let r = 0;
+  for (let i = 1; i < m; i++) if (t[i][n + 1] < t[r][n + 1]) r = i;
+  if (t[r][n + 1] < -eps) {
+    pivot(r, n);
+    if (!phase(m + 1) || Math.abs(t[m + 1][n + 1]) > eps) return null;
+    r = basic.indexOf(-1);
+    if (r >= 0) {
+      let s = -1;
+      for (let j = 0; j <= n; j++) if (Math.abs(t[r][j]) > eps && (s < 0 || nonbasic[j] < nonbasic[s])) s = j;
+      if (s >= 0) pivot(r, s);
+    }
+  }
+  if (!phase(m)) return null;
+  const x = Array(n).fill(0) as number[];
+  for (let i = 0; i < m; i++) if (basic[i] >= 0 && basic[i] < n) x[basic[i]] = t[i][n + 1];
+  const dual = Array(m).fill(0) as number[];
+  for (let j = 0; j <= n; j++) if (nonbasic[j] >= n) dual[nonbasic[j] - n] = t[m][j];
+  return x.every(Number.isFinite) ? {x, dual} : null;
+}
+
+// alpha_i = u_i + epsilon, beta_j = v_j + epsilon.
+// A positive epsilon gives a common relative-interior point for full-dimensional
+// bodies, including nonsimplicial bodies and redundant input vertices.
+export function primalWitness(a: Placement, b: Placement, poll: () => void): {point: Vector | null; direction: Vector} | null {
+  const v = a.coordinates, w = b.coordinates, n = v.length + w.length + 1;
+  const A: number[][] = [], rhs: number[] = [];
+  function equality(row: number[], value: number): void { A.push(row, row.map(x => -x)); rhs.push(value, -value); }
+  for (let j = 0; j < a.min.length; j++) {
+    const row = [...v.map(p => p[j]), ...w.map(p => -p[j])];
+    row.push(row.reduce((s, x) => s + x, 0)); equality(row, 0);
+  }
+  equality([...v.map(() => 1), ...w.map(() => 0), v.length], 1);
+  equality([...v.map(() => 0), ...w.map(() => 1), w.length], 1);
+  const c = Array(n).fill(0) as number[]; c[n - 1] = 1;
+  const result = linearProgram(A, rhs, c, poll);
+  if (!result) return null;
+  const {x, dual} = result;
+  const point = x[n - 1] > 1e-11 ? v[0].map((_, j) => v.reduce((s, p, i) => s + (x[i] + x[n - 1]) * p[j], 0)) : null;
+  return {point, direction: v[0].map((_, j) => dual[2 * j + 1] - dual[2 * j])};
+}
+
+function support(points: Vector[], direction: Vector): Vector {
+  let best = points[0], value = dot(best, direction);
+  for (let i = 1; i < points.length; i++) { const next = dot(points[i], direction); if (next > value) { value = next; best = points[i]; } }
+  return best;
+}
+
+// A common ball of radius tolerance would put a radius-2*tolerance ball in
+// A-B. A support value below 2*tolerance therefore rules it out.
+export function supportSeparates(a: Placement, b: Placement, direction: Vector, tolerance: number): boolean {
+  const length = Math.sqrt(dot(direction, direction));
+  if (length < 1e-12) return false;
+  const axis = mul(direction, 1 / length);
+  return dot(sub(support(a.coordinates, axis), support(b.coordinates, mul(axis, -1))), axis) < 2 * tolerance - 1e-11;
+}
+
+// Dimension-independent GJK distance iteration. The closest point of a simplex
+// is found by enumerating its faces and projecting onto their affine hulls.
+// Return only a verified separating direction; stagnation/contact/intersection
+// go to the primal LP, since zero distance alone does not imply interior overlap.
+export function gjkSeparated(a: Placement, b: Placement, tolerance: number, poll: () => void): boolean {
+  const k = a.min.length;
+  let direction = sub(mean(b.coordinates), mean(a.coordinates));
+  if (dot(direction, direction) < 1e-24) direction = Array.from({length: k}, (_, j) => Number(j === 0));
+  let simplex: Vector[] = [];
+  for (let iteration = 0; iteration < 64; iteration++) {
+    poll();
+    const length = Math.sqrt(dot(direction, direction));
+    if (length < 1e-12) return false;
+    direction = mul(direction, 1 / length);
+    const p = sub(support(a.coordinates, direction), support(b.coordinates, mul(direction, -1)));
+    // Direct support evaluation is a separation certificate, independent of
+    // any numerical errors in the nearest-simplex calculation.
+    if (dot(p, direction) < 2 * tolerance - 1e-11) return true;
+    if (simplex.some(q => dot(sub(p, q), sub(p, q)) < 1e-24)) return false;
+    simplex.push(p);
+    let best: Vector | null = null, active: Vector[] = [], bestNorm = Infinity;
+    let faces = 0;
+    for (let size = 1; size <= Math.min(k + 1, simplex.length); size++) {
+      for (const ids of combinations(simplex.length, size)) {
+        if (faces++ % 256 === 0) poll();
+        const points = ids.map(i => simplex[i]), base = points[0];
+        const edges = points.slice(1).map(q => sub(q, base));
+        const weights = size === 1 ? [] : solveLinear(edges.map(e => edges.map(f => dot(e, f))), edges.map(e => -dot(e, base)), 1e-13);
+        if (!weights || weights.some(x => x < -1e-12) || weights.reduce((s, x) => s + x, 0) > 1 + 1e-12) continue;
+        const q = base.map((x, j) => x + edges.reduce((s, e, i) => s + weights[i] * e[j], 0));
+        const value = dot(q, q);
+        if (value < bestNorm) { bestNorm = value; best = q; active = points; }
+      }
+    }
+    if (!best) return false;
+    simplex = active; direction = mul(best, -1);
+  }
+  return false;
+}
+
+// Halfspace formulation (previously handled only by active-set enumeration).
+// Split unrestricted x and t into positive and negative parts for the simplex solver.
+export function halfspaceLP(a: Placement, b: Placement, tolerance: number, poll: () => void): {point: Vector; separated: boolean} | null {
+  const planes = [...a.halfspaces, ...b.halfspaces], k = a.min.length;
+  const A = planes.map(p => [...p.normal, 1, ...p.normal.map(x => -x), -1]);
+  const c = Array(2 * (k + 1)).fill(0) as number[]; c[k] = 1; c[2 * k + 1] = -1;
+  const result = linearProgram(A, planes.map(p => p.offset), c, poll);
+  if (!result) return null;
+  const point = a.min.map((_, j) => result.x[j] - result.x[k + 1 + j]);
+  // Verify a dual upper bound independently of solver feasibility tolerances.
+  // Normalize nonnegative multipliers so the coefficient of t is exactly one.
+  const weights = result.dual.map(x => Math.max(0, x));
+  const sum = weights.reduce((s, x) => s + x, 0);
+  if (!(sum > 1e-12 && Number.isFinite(sum))) return {point, separated: false};
+  const lambda = weights.map(x => x / sum);
+  const residual = a.min.map((_, j) => planes.reduce((s, p, i) => s + lambda[i] * p.normal[j], 0));
+  const upper = planes.reduce((s, p, i) => s + lambda[i] * p.offset, 0) - residual.reduce((s, r, j) => s + r * (r >= 0 ? Math.max(a.min[j], b.min[j]) : Math.min(a.max[j], b.max[j])), 0);
+  return {point, separated: upper < tolerance - 1e-11};
+}
