@@ -128,9 +128,9 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
         finished: files.has('summary.json'),
         state: files.has('summary.json') ? 'finished' : workerState(metadata.worker),
         pid: Number.isSafeInteger(metadata.worker?.pid) && metadata.worker.pid > 0 ? metadata.worker.pid : null,
-        retryCoverage: {resolved: 0, remaining: expected, viaRetries: 0, complete: false, directories: []}
+        retryCoverage: {resolved: 0, remaining: expected, viaRetries: 0, complete: false, directories: [], inProgress: 0, duplicateAssignments: 0, unassigned: expected, workers: []}
       };
-      const coverageRun = {directory: current, expected, metadata, saved: new Set(trials), resolved: new Set<string>()};
+      const coverageRun = {directory: current, expected, metadata, saved: new Set(trials), resolved: new Set<string>(), attempted: new Set<string>(), state: run.state, pid: run.pid};
       coverageRuns.push(coverageRun);
       const journal = new Map<string, any>();
       if (files.has('trials.jsonl')) {
@@ -168,6 +168,7 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
           continue;
         }
         run[key]++;
+        coverageRun.attempted.add(name);
         if (row.status === 'found' || row.status === 'no-unfolding') coverageRun.resolved.add(name);
         if (typeof row.sourceFile === 'string') retryLinks.push([join(current, name), row.sourceFile]);
         observeTrial?.(run, row, metadata);
@@ -202,6 +203,19 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
   return result;
 }
 
+function elapsedTime(ms: number): string {
+  // Round before splitting units so 59.95 seconds carries into the next minute.
+  let tenths = Math.round(ms / 100);
+  const parts: string[] = [];
+  for (const [unit, size] of [['d', 864000], ['h', 36000], ['m', 600]] as const) {
+    const amount = Math.floor(tenths / size);
+    if (amount) parts.push(`${amount}${unit}`);
+    tenths %= size;
+  }
+  parts.push(`${(tenths / 10).toFixed(1)}s`);
+  return parts.join(' ');
+}
+
 export function formatSummary(summary: ResultsSummary): string {
   const t = summary.totals;
   const lines = [`Results: ${summary.directory}`, ''];
@@ -215,7 +229,8 @@ export function formatSummary(summary: ResultsSummary): string {
     for (const run of summary.runs.slice(offset, offset + group.runCount)) {
       const state = run.state === 'running' ? `running (PID ${run.pid})` : run.state;
       const c = run.retryCoverage;
-      const coverage = c.viaRetries ? `${c.complete ? 'complete' : 'partial'} (+${c.viaRetries}${c.remaining === null ? '; ? left' : `; ${c.remaining} left`})` : '-';
+      const pending = c.inProgress ? `${c.unassigned === 0 ? '' : `${c.unassigned ?? '?'} left, `}${c.inProgress} running` : `${c.remaining ?? '?'} left`;
+      const coverage = c.viaRetries || c.inProgress ? `${c.complete ? 'complete' : 'partial'} (${c.viaRetries ? `+${c.viaRetries}; ` : ''}${pending})` : '-';
       rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, state, coverage));
     }
     offset += group.runCount;
@@ -232,6 +247,6 @@ export function formatSummary(summary: ResultsSummary): string {
   if (summary.warnings.length) lines.push('', ...summary.warnings.map(w => `Warning: ${w}`));
   lines.push('', `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
     'Retry coverage: found/candidate results in other scanned runs resolve source trials; +N counts additional resolved trials. Worker state and original counts are unchanged.',
-    `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${(t.searchMs / 1000).toFixed(1)}s.`);
+    `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${elapsedTime(t.searchMs)}.`);
   return lines.join('\n') + '\n';
 }

@@ -10,6 +10,7 @@ import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/lina
 import type {Vector} from '../src/linalg.civet';
 import type {Placement, Polytope, OverlapMethod} from '../src/index.civet';
 import {formatSummary, summarizeResults} from '../src/summary.civet';
+import {retryCoverage} from '../src/retry-coverage.civet';
 import {formatTimings, summarizeTimings} from '../src/timings.civet';
 import {trialJSON} from '../src/storage.civet';
 import {compactResults} from '../src/compact.civet';
@@ -864,6 +865,52 @@ test('summary tracks completed retry chains, missing seeds, duplicates, and part
     assert.match(formatSummary(report), /complete \(\+3; 0 left\)/);
     // Restricting the scan cannot claim coverage from unscanned siblings.
     assert.equal(summarizeResults(original).runs[0].retryCoverage.viaRetries, 0);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
+});
+
+test('summary diagnoses live retry assignments without marking them resolved or widening the table', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-live-coverage-'));
+  try {
+    const make = (name: string, metadata: object): string => {
+      const path = join(directory, name); mkdirSync(path);
+      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata)); return path;
+    };
+    const record = (directory: string, name: string, status: string): void => {
+      writeFileSync(join(directory, name), 'journal is sufficient');
+      const path = join(directory, 'trials.jsonl');
+      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status}) + '\n');
+    };
+    const source = make('source', {command: 'search', trials: 5, seed: 0, generator: {family: 'random', dimension: 2, count: 3}});
+    const names = [0, 1, 2, 3, 4].map(i => trialName(i, i));
+    const worker = {hostname: hostname(), pid: process.pid};
+    const tasks = names.slice(1).map(name => ({name, sourceFile: join(source, name)}));
+    const first = make('first', {command: 'retry', trials: 4, tasks, worker});
+    const second = make('second', {command: 'retry', trials: 1, tasks: [tasks[0]], worker});
+    make('foreign', {command: 'retry', trials: 1, tasks: [tasks[1]], worker: {...worker, hostname: 'other-host'}});
+    const finished = make('finished', {command: 'retry', trials: 1, tasks: [tasks[1]], worker});
+    writeFileSync(join(finished, 'summary.json'), '{}');
+    record(source, names[0], 'found');
+    record(first, names[2], 'inconclusive'); record(first, names[3], 'found');
+    let report = summarizeResults(directory);
+    let coverage = report.runs.find(run => run.directory === source)!.retryCoverage;
+    assert.equal(coverage.remaining, 3); assert.equal(coverage.inProgress, 2);
+    assert.equal(coverage.unassigned, 1); assert.equal(coverage.duplicateAssignments, 1);
+    assert.deepEqual(coverage.workers, [{directory: first, pid: process.pid, trials: 2}, {directory: second, pid: process.pid, trials: 1}]);
+    assert.match(formatSummary(report), /partial \(\+1; 1 left, 2 running\)/);
+    assert.ok(!formatSummary(report).includes('Running retries'));
+    record(second, names[1], 'found'); record(first, names[2], 'found');
+    let consideredResolved = true;
+    report = summarizeResults(directory, undefined, (runs, links) => {
+      consideredResolved = retryCoverage(runs, links).isResolved(join(source, names[4]));
+    });
+    coverage = report.runs.find(run => run.directory === source)!.retryCoverage;
+    assert.equal(coverage.remaining, 1); assert.equal(coverage.inProgress, 1);
+    assert.equal(coverage.unassigned, 0); assert.equal(coverage.duplicateAssignments, 0);
+    assert.equal(consideredResolved, false);
+    assert.match(formatSummary(report), /partial \(\+3; 1 running\)/);
+    assert.equal(summarizeResults(source).runs[0].retryCoverage.inProgress, 0);
+    writeFileSync(join(first, 'summary.json'), '{}');
+    assert.equal(summarizeResults(directory).runs.find(run => run.directory === source)!.retryCoverage.inProgress, 0);
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
 
