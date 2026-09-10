@@ -101,7 +101,9 @@ All computational limits default to `Infinity` for both `solve` and `search`. Se
 
 The incremental method uses [beneath-beyond construction](https://qhull.org/html/qh-eg.htm). It chooses an affinely independent initial simplex, then inserts the remaining points in input order. For each outside point, it removes the visible boundary simplices and cones their horizon to the new point. A fixed interior point determines outward orientation. Interior, duplicate, and boundary points require no insertion unless they extend the hull.
 
-The triangulation is only an intermediate representation: coplanar pieces merge using their full sets of input point indices, preserving nonsimplicial facets and redundant boundary points. Both methods use the same final facet ordering and ridge construction. Detected numerical inconsistencies in incremental construction trigger enumeration; the result records the actual `hullMethod` and optional `hullFallback` reason. Both methods use floating-point tolerances and can fail on near-degenerate inputs.
+The triangulation is only an intermediate representation: coplanar pieces merge using their full sets of input point indices, preserving nonsimplicial facets and redundant boundary points. Incremental construction reuses the simplex planes and maps simplex adjacency to true facet adjacency, discarding internal boundaries and deduplicating facet pairs. It constructs ridges only for these pairs; enumeration checks all facet pairs. Both methods preserve the same facet and ridge ordering.
+
+Detected numerical inconsistencies in incremental construction trigger enumeration; the result records the actual `hullMethod` and optional `hullFallback` reason. Both methods use floating-point tolerances and can fail on near-degenerate inputs.
 
 Select a method with `--hull-method incremental|enumerate` on `solve`, `search`, or `retry`, or `convexHull(points, {method: 'incremental'})`. Saved hull options record the requested method. Retries preserve it unless overridden; older records without a method use the current default.
 
@@ -132,6 +134,8 @@ const result = solve(polytope, {overlapMethod: 'dual-lp'});
 Saved trials and job manifests record the method. Retries preserve a saved method unless overridden; records without one use the default. Results include the chosen `overlapMethod` and `overlapStats` counters for calls, accepted witnesses, separation bounds, and enumeration fallbacks.
 
 All four methods first try bounding-box and facet-center shortcuts. They retain both vertex and halfspace data, and can detect intersections even when neither facet contains a vertex of the other. Numerical failures or inconclusive internal iterations use the enumeration fallback; only node or time limits can produce an `inconclusive` search status. These are floating-point decisions, not exact certificates.
+
+The LP methods share a custom two-phase simplex solver with reusable tableau buffers and Bland's pivot rule. The halfspace method fills the tableau directly. Buffer reuse also supports nested calls and interrupted searches; returned solutions own their data.
 
 ### Halfspace methods: `dual-lp` and `enumerate`
 
@@ -213,6 +217,7 @@ The benchmarks measure speed while checking that changing hull or intersection m
 | Command | Correctness checks and timing workload | Report |
 | --- | --- | --- |
 | `pnpm bench:hull` | Compare hull incidence, supporting planes, and searches with an 80-node cap; time hull construction alone. | [Hull construction](bench/README.md#hull-construction) |
+| `pnpm bench:compare path/to/reference/src` | Compare exact hull data and search results against another revision; time hulls and completed searches separately. | [Comparing revisions](bench/README.md#comparing-revisions) |
 | `pnpm bench` | Compare overlap decisions against `enumerate` on sampled facet pairs, then compare search counts and witness trees with a 120-node cap. | [Fixed examples](bench/README.md) |
 | `pnpm bench:sampled` | Sample parameters and seeds from saved runs; compare pair decisions and searches with a 40-node cap. Also check rotated boxes against analytic thresholds for separation, contact, and thin overlap. | [Sampled examples](bench/README.md#sampled-examples) |
 | `pnpm bench:completed` | Rerun saved successful examples to completion, comparing search counts and witness trees. Time full searches and profile search alone and hull construction plus search. | [Completed searches and CPU profiles](bench/README.md#completed-searches-and-profiling) |

@@ -3,11 +3,15 @@ import {affineBasis, dot, mean, mul, norm, perpendicular, residual, sub, unit} f
 import type {Vector, Matrix} from './linalg.civet';
 
 export class HullPrecisionError extends Error {}
-interface SimplexFace {id: number; vertices: number[]; normal: Vector; offset: number; keys: string[];}
+interface SimplexFace {id: number; vertices: number[]; basis: Matrix; normal: Vector; offset: number; keys: string[];}
+export interface HullBoundary {
+  faces: SimplexFace[];
+  adjacency: [number, number][]; // Indices into faces, including coplanar neighbors.
+}
 
 // Beneath-beyond on a triangulated boundary. Coplanar boundary simplices are
 // allowed here; the caller merges supporting planes into true facets.
-export function incrementalHull(points: Vector[], eps: number, consume: () => void): number[][] {
+export function incrementalHull(points: Vector[], eps: number, consume: () => void): HullBoundary {
   const d = points[0].length;
   const seed = [0], basis: Matrix = [];
   while (seed.length <= d) {
@@ -36,7 +40,7 @@ export function incrementalHull(points: Vector[], eps: number, consume: () => vo
     if (side > 0) { normal = mul(normal, -1); offset = -offset; }
     const keys = vertices.map((_, omitted) => vertices.filter((_, j) => j !== omitted).join(','));
     const id = nextId++;
-    faces.set(id, {id, vertices, normal, offset, keys});
+    faces.set(id, {id, vertices, basis: span, normal, offset, keys});
     for (const key of keys) {
       if (!incidence.has(key)) incidence.set(key, new Set());
       incidence.get(key)!.add(id);
@@ -69,5 +73,13 @@ export function incrementalHull(points: Vector[], eps: number, consume: () => vo
     for (const vertices of horizon.values()) add([...vertices, point]);
     for (const owners of incidence.values()) if (owners.size !== 2) throw new HullPrecisionError('Open incremental boundary after insertion.');
   }
-  return [...faces.values()].map(face => face.vertices);
+  const boundary = [...faces.values()];
+  const indices = new Map(boundary.map((face, i) => [face.id, i]));
+  const adjacency: [number, number][] = [];
+  for (const owners of incidence.values()) {
+    if (owners.size !== 2) throw new HullPrecisionError('Open final incremental boundary.');
+    const [a, b] = [...owners];
+    adjacency.push([indices.get(a)!, indices.get(b)!]);
+  }
+  return {faces: boundary, adjacency};
 }

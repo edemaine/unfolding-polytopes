@@ -3,7 +3,11 @@
 export type Vector = number[];
 export type Matrix = number[][];
 
-export const dot = (a: Vector, b: Vector): number => a.reduce((s, x, i) => s + x * b[i], 0);
+export function dot(a: Vector, b: Vector): number {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+  return sum;
+}
 export const add = (a: Vector, b: Vector): Vector => a.map((x, i) => x + b[i]);
 export const sub = (a: Vector, b: Vector): Vector => a.map((x, i) => x - b[i]);
 export const mul = (a: Vector, s: number): Vector => a.map(x => x * s);
@@ -17,12 +21,19 @@ export const unit = (a: Vector, eps: number): Vector => {
 };
 
 export function residual(v: Vector, basis: Matrix): Vector {
-  let r = [...v];
+  const r = [...v];
+  orthogonalize(r, basis);
+  return r;
+}
+
+function orthogonalize(r: Vector, basis: Matrix): void {
   // Reorthogonalization matters for thin facets and nearly dependent input.
   for (let pass = 0; pass < 2; pass++) {
-    for (const b of basis) r = sub(r, mul(b, dot(r, b)));
+    for (const b of basis) {
+      const projection = dot(r, b);
+      for (let j = 0; j < r.length; j++) r[j] -= b[j] * projection;
+    }
   }
-  return r;
 }
 
 export function orthonormal(vectors: Matrix, eps: number): Matrix {
@@ -40,9 +51,12 @@ export const affineBasis = (points: Vector[], eps: number): Matrix => (
 export function perpendicular(basis: Matrix, dimension: number, eps: number): Vector {
   let best: Vector = [];
   let length = 0;
+  const r = Array(dimension).fill(0) as Vector;
   for (let i = 0; i < dimension; i++) {
-    const r = residual(Array.from({length: dimension}, (_, j) => Number(i === j)), basis);
-    if (norm(r) > length) { best = r; length = norm(r); }
+    r.fill(0); r[i] = 1;
+    orthogonalize(r, basis);
+    const candidateLength = norm(r);
+    if (candidateLength > length) { best = [...r]; length = candidateLength; }
   }
   return unit(best, eps);
 }

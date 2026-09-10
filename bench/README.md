@@ -60,6 +60,22 @@ Compares incremental hull construction with enumeration on all 43 sampled and te
 
 Writes `output/hull-results.json` with all timings and candidate-plane work counts.
 
+## Comparing revisions
+
+```sh
+pnpm bench:compare path/to/reference/src
+```
+
+Loads a reference source tree alongside the current code. Both use incremental hulls and `dual-lp`. Compares exact hull data, search counts, witness trees, and overlap counters on the sampled and completed fixtures, plus 4D/5D cubes and cross polytopes. Completed fixtures run without cutoffs; other searches have an 80-node cap. Hulls and completed searches are timed separately over five repetitions after warmup, alternating version order.
+
+Writes `output/optimization-results.json`. The reference must support the current hull and solver APIs. For the optimization comparison below, prepare the reference with these Bash commands:
+
+```sh
+mkdir -p bench/output/reference
+git archive eb10196 src | tar -x -C bench/output/reference
+pnpm bench:compare bench/output/reference/src
+```
+
 ## Results
 
 Measurements from September 10, 2026, using Node v24.11.0. Search times include placement, pruning, and intersection tests, but exclude hull construction and startup. Each table compares methods on the same inputs within one benchmark run. Times are in **milliseconds** unless stated otherwise; short timings are sensitive to machine load.
@@ -179,4 +195,17 @@ Hull-only measurements, using the median of three repetitions for each case, the
 | 6 | 20 | random | 3 | 4305.07 | 271.41 | 15.86x |
 | **Total** | | | **57** | **12780.77** | **757.27** | **16.88x** |
 
-Incremental construction benefits larger point sets most. Its bookkeeping can cost more on tiny hulls. It still scans the current boundary for each inserted point, and final ridge construction compares all pairs of true facets.
+These measurements used the initial incremental implementation. It benefits larger point sets most; its bookkeeping can cost more on tiny hulls. The following comparison measures the additional optimizations.
+
+### LP buffers, hull linear algebra, and ridge adjacency
+
+Comparison with revision `eb10196`, which already uses incremental hulls and `dual-lp`. The optimized version reuses LP tableau buffers, fills halfspace tableaux directly, streamlines pivots and orthogonalization, retains simplex planes, and derives ridge candidates from simplex adjacency. Times are sums of per-case medians over five repetitions, in milliseconds.
+
+| Workload | Cases | Before | After | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Hull construction, all fixtures and added families | 57 | 793.67 | 227.78 | 3.48x |
+| Hull construction, completed fixtures | 10 | 198.46 | 58.50 | 3.39x |
+| Full search, completed fixtures | 10 | 1067.02 | 601.78 | 1.77x |
+| Hull + search, sum of the preceding two rows | 10 | 1265.48 | 660.28 | 1.92x |
+
+All 57 hulls matched the reference exactly, including facet/ridge IDs and numerical geometry. Search counts, witness trees, and overlap counters also matched. The separate sampled suite passed 54,318 overlap comparisons and 258 search comparisons across all four intersection methods, including analytic contact and thin-overlap cases. These checks establish regression agreement, not exact geometric certification.

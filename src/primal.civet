@@ -6,19 +6,51 @@ import type {Placement} from './unfold.civet';
 // Two-phase tableau simplex: maximize c.x, A.x <= b, x >= 0.
 // Bland's rule prevents cycling on degenerate (especially touching) inputs.
 export function linearProgram(A: number[][], b: number[], c: number[], poll: () => void): {x: number[]; dual: number[]} | null {
-  const m = b.length, n = c.length, eps = 1e-11;
-  const basic = Array.from({length: m}, (_, i) => n + i);
-  const nonbasic = Array.from({length: n + 1}, (_, i) => i === n ? -1 : i);
-  const t = Array.from({length: m + 2}, () => Array(n + 2).fill(0) as number[]);
-  for (let i = 0; i < m; i++) { for (let j = 0; j < n; j++) t[i][j] = A[i][j]; t[i][n] = -1; t[i][n + 1] = b[i]; }
-  for (let j = 0; j < n; j++) t[m][j] = -c[j];
-  t[m + 1][n] = 1;
-  function pivot(r: number, s: number): void {
-    const inv = 1 / t[r][s];
-    for (let i = 0; i < m + 2; i++) if (i !== r) {
-      for (let j = 0; j < n + 2; j++) if (j !== s) t[i][j] -= t[r][j] * t[i][s] * inv;
+  return tableauProgram(b.length, c.length, t => {
+    for (let i = 0; i < b.length; i++) {
+      for (let j = 0; j < c.length; j++) t[i][j] = A[i][j];
+      t[i][c.length + 1] = b[i];
     }
-    for (let j = 0; j < n + 2; j++) if (j !== s) t[r][j] *= inv;
+    for (let j = 0; j < c.length; j++) t[b.length][j] = -c[j];
+  }, poll);
+}
+
+interface LPWorkspace {tableau: Float64Array[]; basic: number[]; nonbasic: number[];}
+const workspaces: LPWorkspace[] = [];
+
+function tableauProgram(m: number, n: number, initialize: (t: Float64Array[]) => void, poll: () => void): {x: number[]; dual: number[]} | null {
+  // A workspace belongs to this call until finally: poll may throw or even run
+  // another LP. Returned solutions never alias these reusable buffers.
+  const workspace = workspaces.pop() ?? {tableau: [], basic: [], nonbasic: []};
+  const {tableau: t, basic, nonbasic} = workspace;
+  try {
+    for (let i = 0; i < m + 2; i++) {
+      if (!t[i] || t[i].length < n + 2) { t[i] = new Float64Array(n + 2); }
+      else { t[i].fill(0, 0, n + 2); }
+    }
+    basic.length = m; nonbasic.length = n + 1;
+    for (let i = 0; i < m; i++) { basic[i] = n + i; t[i][n] = -1; }
+    for (let j = 0; j <= n; j++) nonbasic[j] = j === n ? -1 : j;
+    t[m + 1][n] = 1;
+    initialize(t);
+    return simplexTableau(t, basic, nonbasic, m, n, poll);
+  } finally {
+    if (workspaces.length < 2) workspaces.push(workspace);
+  }
+}
+
+function simplexTableau(t: Float64Array[], basic: number[], nonbasic: number[], m: number, n: number, poll: () => void): {x: number[]; dual: number[]} | null {
+  const eps = 1e-11;
+  function pivot(r: number, s: number): void {
+    const pivotRow = t[r], inv = 1 / pivotRow[s];
+    for (let i = 0; i < m + 2; i++) if (i !== r) {
+      const row = t[i], entry = row[s];
+      // Keep the original arithmetic order while avoiding repeated row lookups
+      // and the column test inside the hot loop.
+      for (let j = 0; j < s; j++) row[j] -= pivotRow[j] * entry * inv;
+      for (let j = s + 1; j < n + 2; j++) row[j] -= pivotRow[j] * entry * inv;
+    }
+    for (let j = 0; j < n + 2; j++) if (j !== s) pivotRow[j] *= inv;
     for (let i = 0; i < m + 2; i++) if (i !== r) t[i][s] *= -inv;
     t[r][s] = inv;
     [basic[r], nonbasic[s]] = [nonbasic[s], basic[r]];
@@ -141,19 +173,32 @@ export function gjkSeparated(a: Placement, b: Placement, tolerance: number, poll
 // Halfspace formulation (previously handled only by active-set enumeration).
 // Split unrestricted x and t into positive and negative parts for the simplex solver.
 export function halfspaceLP(a: Placement, b: Placement, tolerance: number, poll: () => void): {point: Vector; separated: boolean} | null {
-  const planes = [...a.halfspaces, ...b.halfspaces], k = a.min.length;
-  const A = planes.map(p => [...p.normal, 1, ...p.normal.map(x => -x), -1]);
-  const c = Array(2 * (k + 1)).fill(0) as number[]; c[k] = 1; c[2 * k + 1] = -1;
-  const result = linearProgram(A, planes.map(p => p.offset), c, poll);
+  const k = a.min.length, m = a.halfspaces.length + b.halfspaces.length, n = 2 * (k + 1);
+  const plane = (i: number) => i < a.halfspaces.length ? a.halfspaces[i] : b.halfspaces[i - a.halfspaces.length];
+  // Populate the solver's tableau directly, without constructing and copying A.
+  const result = tableauProgram(m, n, t => {
+    for (let i = 0; i < m; i++) {
+      const p = plane(i), row = t[i];
+      for (let j = 0; j < k; j++) { row[j] = p.normal[j]; row[k + 1 + j] = -p.normal[j]; }
+      row[k] = 1; row[2 * k + 1] = -1; row[n + 1] = p.offset;
+    }
+    t[m][k] = -1; t[m][2 * k + 1] = 1;
+  }, poll);
   if (!result) return null;
   const point = a.min.map((_, j) => result.x[j] - result.x[k + 1 + j]);
   // Verify a dual upper bound independently of solver feasibility tolerances.
   // Normalize nonnegative multipliers so the coefficient of t is exactly one.
-  const weights = result.dual.map(x => Math.max(0, x));
-  const sum = weights.reduce((s, x) => s + x, 0);
+  const weights = result.dual;
+  let sum = 0;
+  for (let i = 0; i < m; i++) { weights[i] = Math.max(0, weights[i]); sum += weights[i]; }
   if (!(sum > 1e-12 && Number.isFinite(sum))) return {point, separated: false};
-  const lambda = weights.map(x => x / sum);
-  const residual = a.min.map((_, j) => planes.reduce((s, p, i) => s + lambda[i] * p.normal[j], 0));
-  const upper = planes.reduce((s, p, i) => s + lambda[i] * p.offset, 0) - residual.reduce((s, r, j) => s + r * (r >= 0 ? Math.max(a.min[j], b.min[j]) : Math.min(a.max[j], b.max[j])), 0);
+  const residual = Array(k).fill(0) as Vector;
+  let bound = 0;
+  for (let i = 0; i < m; i++) {
+    const weight = weights[i] / sum, p = plane(i);
+    bound += weight * p.offset;
+    for (let j = 0; j < k; j++) residual[j] += weight * p.normal[j];
+  }
+  const upper = bound - residual.reduce((s, r, j) => s + r * (r >= 0 ? Math.max(a.min[j], b.min[j]) : Math.min(a.max[j], b.max[j])), 0);
   return {point, separated: upper < tolerance - 1e-11};
 }

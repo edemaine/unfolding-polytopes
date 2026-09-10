@@ -84,6 +84,29 @@ test('custom LP returns primal values and row multipliers', () => {
   }
 });
 
+test('LP workspaces tolerate resizing, nested calls, and interrupted solves', () => {
+  const kept = linearProgram([[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], () => {})!;
+  const snapshot = structuredClone(kept);
+  for (const n of [8, 1, 12, 2, 1]) {
+    const A = Array.from({length: n}, (_, i) => Array.from({length: n}, (_, j) => Number(i === j)));
+    const limits = Array.from({length: n}, (_, i) => i + 1);
+    let polls = 0;
+    const result = linearProgram(A, limits, Array(n).fill(1), () => {
+      polls++;
+      const nested = linearProgram([[1], [-1]], [5, -2], [1], () => {})!;
+      near(nested.x, [5]);
+    });
+    assert.ok(polls > 0);
+    near(result!.x, limits);
+    near(result!.dual, Array(n).fill(1));
+    assert.throws(() => linearProgram(A, limits, Array(n).fill(1), () => { throw new Error('interrupt LP'); }), /interrupt LP/);
+    assert.equal(linearProgram([[1], [-1]], [0, -1], [1], () => {}), null);
+    assert.equal(linearProgram([[-1]], [0], [1], () => {}), null);
+    near(linearProgram([[1]], [3], [1], () => {})!.x, [3]);
+  }
+  assert.deepEqual(kept, snapshot);
+});
+
 test('primal overlap backends: contact, thin overlaps, random pairs, and trees', () => {
   const methods: OverlapMethod[] = ['primal-lp', 'gjk-lp', 'dual-lp'];
   for (let k = 1; k <= 4; k++) {
@@ -166,6 +189,9 @@ test('incremental hull agrees with enumeration across dimensions and degeneracie
     compare([Array(d).fill(0), cube[0], ...cube, cube[0], cube[0].map((x, j) => j === 0 ? 0 : x)]);
   }
   compare(hypersimplex(4, 2)); compare(prism(simplex(3))); compare(pyramid(hypercube(3))); compare(cyclic(4, 8));
+  // Coplanar triangulation boundaries must merge into one nonsimplicial ridge.
+  compare(product(simplex(2), simplex(2)));
+  compare(prism(hypercube(3)).map(p => p.map((x, j) => x + (j ? p[j - 1] * 0.3 : 0))));
   const thin = [[0, 0], [1, 0], [0, 1.2e-9]];
   const fallback = convexHull(thin, {method: 'incremental', maxCombinations: 4});
   assert.equal(fallback.hullMethod, 'enumerate');

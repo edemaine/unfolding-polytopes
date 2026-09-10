@@ -75,13 +75,20 @@ export function convexHull(input: Vector[], options: HullOptions = {}): Polytope
     hullCombinations++;
   };
   try {
-    const candidates = method === 'incremental' ? incrementalHull(points, eps, consume) : combinations(points.length, d);
-    for (const ids of candidates) {
+    const boundary = method === 'incremental' ? incrementalHull(points, eps, consume) : undefined;
+    const simplexFacetKeys: string[] = [];
+    const candidates = boundary ? boundary.faces : combinations(points.length, d);
+    for (const candidate of candidates) {
       consume();
-      let basis = affineBasis(ids.map(i => points[i]), eps);
-      if (basis.length !== d - 1) continue;
-      let normal = perpendicular(basis, d, eps);
-      let offset = dot(normal, points[ids[0]]);
+      const cached = Array.isArray(candidate) ? undefined : candidate;
+      const ids = Array.isArray(candidate) ? candidate : candidate.vertices;
+      let basis = cached?.basis ?? affineBasis(ids.map(i => points[i]), eps);
+      if (basis.length !== d - 1) {
+        if (boundary) throw new HullPrecisionError('Degenerate final incremental simplex.');
+        continue;
+      }
+      let normal = cached?.normal ?? perpendicular(basis, d, eps);
+      let offset = cached?.offset ?? dot(normal, points[ids[0]]);
       let distances = points.map(p => dot(normal, p) - offset);
       const positive = distances.some(x => x > eps);
       const negative = distances.some(x => x < -eps);
@@ -96,15 +103,18 @@ export function convexHull(input: Vector[], options: HullOptions = {}): Polytope
       }
       const vertices = distances.flatMap((x, i) => Math.abs(x) <= eps ? [i] : []);
       const key = vertices.join(',');
+      if (boundary) simplexFacetKeys.push(key);
       if (seen.has(key)) continue;
       seen.add(key);
-      if (affineBasis(vertices.map(i => points[i]), eps).length !== d - 1) {
+      const canonical = vertices.length === ids.length && vertices.every((v, i) => v === ids[i]);
+      const fullBasis = canonical ? basis : affineBasis(vertices.map(i => points[i]), eps);
+      if (fullBasis.length !== d - 1) {
         throw new HullPrecisionError('Inconsistent coplanarity; try a different tolerance.');
       }
-      if (method === 'incremental') {
+      if (boundary && !canonical) {
         // Match the enumerator's lexicographic basis and orientation, so facet
         // IDs, ridge IDs, and subsequent tree-search order remain comparable.
-        basis = affineBasis(vertices.map(i => points[i]), eps);
+        basis = fullBasis;
         normal = perpendicular(basis, d, eps);
         offset = dot(normal, points[vertices[0]]);
         if (points.some(p => dot(normal, p) - offset > eps)) { normal = mul(normal, -1); offset = -offset; }
@@ -118,21 +128,45 @@ export function convexHull(input: Vector[], options: HullOptions = {}): Polytope
 
     const ridges: Ridge[] = [];
     const ridgeKeys = new Set<string>();
-    for (let a = 0; a < facets.length; a++) {
-      for (let b = a + 1; b < facets.length; b++) {
-        const vertices = facets[a].vertices.filter(i => facets[b].vertices.includes(i));
-        if (vertices.length < d - 1) continue;
-        const basis = affineBasis(vertices.map(i => points[i]), eps);
-        if (basis.length < d - 2) continue;
-        if (basis.length !== d - 2 || ridgeKeys.has(vertices.join(','))) {
-          throw new HullPrecisionError('Inconsistent ridge incidence; try a different tolerance.');
+    function* adjacentFacets(): Generator<[number, number]> {
+      if (!boundary) {
+        for (let a = 0; a < facets.length; a++) {
+          for (let b = a + 1; b < facets.length; b++) yield [a, b];
         }
-        ridgeKeys.add(vertices.join(','));
-        const inward = [a, b].map(f => unit(residual(sub(mean(facets[f].vertices.map(i => points[i])), points[vertices[0]]), basis), eps)) as [Vector, Vector];
-        const id = ridges.length;
-        ridges.push({facets: [a, b], vertices, basis, inward});
-        facets[a].ridges.push(id); facets[b].ridges.push(id);
+        return;
       }
+      const facetIds = new Map(facets.map((f, i) => [f.vertices.join(','), i]));
+      const pairs = new Map<string, [number, number]>();
+      for (const [i, j] of boundary.adjacency) {
+        const a = facetIds.get(simplexFacetKeys[i]), b = facetIds.get(simplexFacetKeys[j]);
+        if (a === undefined || b === undefined) throw new HullPrecisionError('Missing incremental facet mapping.');
+        if (a === b) continue; // Triangulation boundary internal to one true facet.
+        const pair: [number, number] = a < b ? [a, b] : [b, a];
+        pairs.set(pair.join(','), pair);
+      }
+      // Preserve the enumerator's ridge IDs and therefore tree-search order.
+      yield* [...pairs.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    }
+    const centers = facets.map(f => mean(f.vertices.map(i => points[i])));
+    for (const [a, b] of adjacentFacets()) {
+      const vertices = facets[a].vertices.filter(i => facets[b].vertices.includes(i));
+      if (vertices.length < d - 1) {
+        if (boundary) throw new HullPrecisionError('Incremental neighbors do not share a ridge.');
+        continue;
+      }
+      const basis = affineBasis(vertices.map(i => points[i]), eps);
+      if (basis.length < d - 2) {
+        if (boundary) throw new HullPrecisionError('Degenerate incremental ridge.');
+        continue;
+      }
+      if (basis.length !== d - 2 || ridgeKeys.has(vertices.join(','))) {
+        throw new HullPrecisionError('Inconsistent ridge incidence; try a different tolerance.');
+      }
+      ridgeKeys.add(vertices.join(','));
+      const inward = [a, b].map(f => unit(residual(sub(centers[f], points[vertices[0]]), basis), eps)) as [Vector, Vector];
+      const id = ridges.length;
+      ridges.push({facets: [a, b], vertices, basis, inward});
+      facets[a].ridges.push(id); facets[b].ridges.push(id);
     }
     for (const facet of facets) {
       if (facet.ridges.length < d) throw new HullPrecisionError('Facet has too few ridges; hull is numerically inconsistent.');
