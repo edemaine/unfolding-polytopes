@@ -63,7 +63,7 @@ function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
 
 // Count saved attempts, including retries separately. Journals avoid parsing
 // large coordinate files, but only rows with an existing trial file count.
-export function summarizeResults(path = 'results'): ResultsSummary {
+export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; generator?: any}, metadata: any) => void): ResultsSummary {
   const directory = resolve(path);
   const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
   function scan(current: string): void {
@@ -107,7 +107,7 @@ export function summarizeResults(path = 'results'): ResultsSummary {
         if (!row) {
           try {
             const saved = JSON.parse(readFileSync(join(current, name), 'utf8'));
-            row = {status: saved?.error !== undefined ? 'error' : saved?.result?.status,
+            row = {file: name, sourceFile: saved?.sourceFile, generator: saved?.generator, status: saved?.error !== undefined ? 'error' : saved?.result?.status,
               termination: saved?.result?.termination, elapsedMs: saved?.result?.stats?.elapsedMs};
           } catch {
             run.unreadable++;
@@ -122,6 +122,7 @@ export function summarizeResults(path = 'results'): ResultsSummary {
           continue;
         }
         run[key]++;
+        observeTrial?.(run, row, metadata);
         if (row.status === 'inconclusive' && row.termination === 'timeout') run.timeouts++;
         if (row.status === 'inconclusive' && row.termination === 'maxNodes') run.nodeLimits++;
         if (nonnegative(row.elapsedMs)) run.searchMs += row.elapsedMs;

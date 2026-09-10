@@ -203,6 +203,24 @@ The CLI supports the first six families, with `cube` and `cross` as family names
 
 Facet and ridge IDs are zero-based array indices. Facet vertex indices reference the original input array; facet vertices are **not cyclically ordered**. A returned `tree` is a list of uncut ridge IDs. Cut ridges may give multiple developed copies of the same input vertex, so each placement stores its own `vertices` and `coordinates` arrays. All API and saved placement coordinates use normalized units; multiply them by `polytope.scale` to restore original lengths. Placement maps act on `(inputPoint - polytope.center) / polytope.scale`.
 
+## Timing distributions
+
+```sh
+pnpm timings                         # Group all saved attempts by generation parameters
+pnpm timings results/retry-XXXXXX     # One run or any results subdirectory
+pnpm timings --by-run                 # Keep individual runs separate
+pnpm timings --include-timeouts       # Show timed-out attempts too
+pnpm timings --json --output timings.json
+```
+
+The table reports **N, minimum, median, P90, P99, P99.9, maximum**, and cumulative counts **over one second, minute, hour, and day**. A two-hour search contributes to the first three tail columns. Thresholds are strict: exactly one minute counts as over a second, but not over a minute. P99.9 is the **99.9th percentile**. Percentiles use nearest rank, so high percentiles can equal the maximum in small groups. JSON durations are in milliseconds; the table selects readable units.
+
+Groups distinguish dimension, point count, generator family, distribution, axis scales, and hypersimplex weight when applicable. Seeds are pooled. Groups sort by dimension and point count; overall totals by outcome appear at the bottom with repeated headers. Retry parameters come from saved task settings or the source run's metadata when available; missing parameters display as `?`. Retries count as separate attempts. Use `--by-run` to compare individual jobs, especially when they used different algorithms, tolerances, or machines.
+
+Times measure **tree search only**, excluding hull construction and file writes. Successful searches and exhausted candidates are separate outcomes. Timed-out attempts are omitted by default from both group rows and overall timing totals; `--include-timeouts` shows them. Node cutoffs remain visible. Cutoffs have separate rows, including limited runs that already found a witness: their recorded times do not measure an exhaustive search. Active trials have no saved timing yet. There is no combined percentile mixing cutoffs with completed searches.
+
+The command shares `summary`'s reader: it parses compact journals, keeps the last row for each trial filename, ignores entries without a saved trial file, and reads individual trial JSON only for missing or invalid journal entries. Missing/invalid durations and unreadable records are counted separately. Existing files with valid journal rows are not opened. The report is a snapshot while jobs are running.
+
 ## Tests and benchmarks
 
 The checks below test **the implementation of hull construction, facet placement, overlap detection, and tree search**. They do not prove the unfolding conjecture or certify a numerical counterexample.

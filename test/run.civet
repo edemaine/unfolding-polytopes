@@ -10,6 +10,7 @@ import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/lina
 import type {Vector} from '../src/linalg.civet';
 import type {Placement, Polytope, OverlapMethod} from '../src/index.civet';
 import {formatSummary, summarizeResults} from '../src/summary.civet';
+import {formatTimings, summarizeTimings} from '../src/timings.civet';
 import {generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from '../src/jobs.civet';
 import type {GeneratorSpec} from '../src/jobs.civet';
 
@@ -493,6 +494,68 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(cli(['retry', join(directory, 'missing')]).status, 1);
   } finally {
     // Fresh mkdtemp directory owned by this test.
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('timings group parameters, separate cutoffs, and measure cumulative tails', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'unfolding-timings-test-'));
+  try {
+    const generator = {family: 'random', dimension: 4, count: 8, distribution: 'sphere'};
+    function run(name: string, metadata: object, values: (number | null)[], status = 'found', termination = 'solution'): string {
+      const path = join(directory, name); mkdirSync(path);
+      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
+      const lines: string[] = [];
+      for (const [i, elapsedMs] of values.entries()) {
+        const file = `trial-${i}.json`;
+        // Indexed files must not be parsed; their journal rows are sufficient.
+        writeFileSync(join(path, file), 'large file intentionally not parsed');
+        lines.push(JSON.stringify({file, status, termination, elapsedMs}));
+      }
+      if (lines.length) lines.push(lines[0]); // Same attempt, not a second sample.
+      lines.push(JSON.stringify({file: 'trial-absent.json', status, elapsedMs: 999999999}));
+      writeFileSync(join(path, 'trials.jsonl'), lines.join('\n'));
+      return path;
+    }
+    const source = run('source', {generator}, [0, 1000, 1001, 60000, 60001, 3600000, 3600001, 86400000, 86400001, null]);
+    run('retry', {sourceDirectory: source}, [2]);
+    run('scaled', {generator: {...generator, scales: [1, 1, 1, .01]}}, [7]);
+    run('gaussian', {generator: {...generator, distribution: 'gaussian'}}, [8]);
+    run('timeout', {generator}, [10000], 'inconclusive', 'timeout');
+    run('limited-found', {generator}, [11], 'found', 'maxNodes');
+    const fallback = run('fallback', {generator}, []);
+    writeFileSync(join(fallback, 'trial-good.json'), JSON.stringify({result: {status: 'found', stats: {elapsedMs: 3}}}));
+    writeFileSync(join(fallback, 'trial-bad.json'), '{');
+    const report = summarizeTimings(directory, false, true);
+    const defaults = summarizeTimings(directory);
+    assert.equal(defaults.omittedTimeouts, 1);
+    assert.ok(defaults.groups.every(g => !g.outcome.includes('timeout')));
+    assert.ok(defaults.totals.every(g => !g.outcome.includes('timeout')));
+    const found = report.totals.find(g => g.outcome === 'found')!;
+    assert.equal(found.count, 13);
+    assert.equal(found.minMs, 0); assert.equal(found.maxMs, 86400001);
+    assert.equal(found.medianMs, 1001); assert.equal(found.p90Ms, 86400000);
+    assert.equal(found.p99Ms, 86400001); assert.equal(found.p999Ms, 86400001);
+    assert.deepEqual([found.overSecond, found.overMinute, found.overHour, found.overDay], [7, 5, 3, 1]);
+    assert.equal(report.groups.filter(g => g.outcome === 'found').length, 3);
+    assert.equal(report.totals.find(g => g.outcome === 'timeout')!.count, 1);
+    assert.equal(report.totals.find(g => g.outcome === 'found/node-limit')!.count, 1);
+    assert.equal(report.missingTimes, 1); assert.equal(report.unreadable, 1);
+    assert.equal(summarizeTimings(directory, true, true).groups.length, 7);
+    const text = formatTimings(report);
+    assert.match(text, /Min.*Median.*P99\.9.*Max.*>1s.*>1d/);
+    assert.match(text, /TOTAL/);
+    const result = cli(['timings', directory, '--json', '--include-timeouts']);
+    assert.equal(result.status, 0, String(result.stderr));
+    assert.deepEqual(JSON.parse(String(result.stdout)), JSON.parse(JSON.stringify(report)));
+    const multi = run('multi', {sourceDirectories: [source]}, [5]);
+    writeFileSync(join(multi, 'trials.jsonl'), JSON.stringify({file: 'trial-0.json', sourceFile: join(source, 'trial-0.json'), status: 'found', elapsedMs: 5}));
+    const inherited = summarizeTimings(multi).groups[0];
+    assert.equal(inherited.dimension, 4); assert.equal(inherited.points, 8);
+    assert.equal(inherited.parameters.distribution, 'sphere');
+    const empty = join(directory, 'empty'); mkdirSync(empty);
+    assert.match(formatTimings(summarizeTimings(empty)), /No recorded search timings/);
+  } finally {
     rmSync(directory, {recursive: true, force: true});
   }
 });

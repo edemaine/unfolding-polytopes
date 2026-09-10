@@ -6,10 +6,11 @@ import {hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercub
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
+import {formatTimings, summarizeTimings} from './timings.civet';
 import {missingTasks, nextSearchSeed, taskInput, trialName, trialStatuses, withSeedLock} from './jobs.civet';
 import type {GeneratorSpec, TrialTask} from './jobs.civet';
 
-const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary> [input.json|directory] [options]
+const help = `Usage: pnpm exec civet src/cli.civet <generate|solve|search|retry|summary|timings> [input.json|directory] [options]
 
 generate  Write {points, generator} JSON, to stdout or --output FILE.
 solve     Read points from input.json, or generate them with the options below.
@@ -20,6 +21,8 @@ retry     Resume missing trials and rerun inconclusive trials into one new run.
           Reuse saved points and settings; reset all work limits to Infinity.
           Explicit solver/geometry options override saved settings.
 summary   Summarize runs recursively in a directory (default results).
+timings   Search-time percentiles and tail counts (default results).
+          --by-run keeps individual runs separate; --json exports milliseconds.
 
 Generation options:
   --family NAME        random (default), simplex, cube, cross, cyclic, hypersimplex
@@ -43,8 +46,10 @@ Geometry and solver options:
   --no-prune           Check overlap only on complete trees (for cross-checking)
 
 Output and search options:
-  --output PATH        File for generate/solve/summary; parent directory for search/retry
-  --json               Machine-readable summary instead of a text table
+  --output PATH        File for generate/solve/summary/timings; parent for search/retry
+  --json               Machine-readable summary or timings instead of a text table
+  --by-run             Separate timing distributions for each run
+  --include-timeouts   Include timed-out attempts in timing reports
   --trials N           Number of random polytopes in search (default 100)
   --help               Show this help
 
@@ -54,7 +59,7 @@ Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
 const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
-const switches = new Set(['help', 'all', 'no-prune', 'json']);
+const switches = new Set(['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts']);
 
 function main(args: string[]): void {
   const flags = new Map<string, string>();
@@ -76,7 +81,17 @@ function main(args: string[]): void {
   }
   if (flags.has('help') || !positional.length) { console.log(help); return; }
   const [command, file] = positional;
-  if (!['generate', 'solve', 'search', 'retry', 'summary'].includes(command) || positional.length > (command === 'retry' ? Infinity : ['solve', 'summary'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
+  if (!['generate', 'solve', 'search', 'retry', 'summary', 'timings'].includes(command) || positional.length > (command === 'retry' ? Infinity : ['solve', 'summary', 'timings'].includes(command) ? 2 : 1)) throw new Error('Invalid command or positional arguments. Use --help.');
+  if (command === 'timings') {
+    for (const name of flags.keys()) if (!['json', 'output', 'by-run', 'include-timeouts'].includes(name)) throw new Error(`--${name} does not apply to timings.`);
+    const report = summarizeTimings(file ?? 'results', flags.has('by-run'), flags.has('include-timeouts'));
+    const text = flags.has('json') ? JSON.stringify(report, null, 2) + '\n' : formatTimings(report);
+    if (flags.has('output')) { writeFileSync(flags.get('output')!, text); }
+    else { process.stdout.write(text); }
+    return;
+  }
+  if (flags.has('by-run')) throw new Error('--by-run only applies to timings.');
+  if (flags.has('include-timeouts')) throw new Error('--include-timeouts only applies to timings.');
   if (command === 'summary') {
     for (const name of flags.keys()) if (!['json', 'output'].includes(name)) throw new Error(`--${name} does not apply to summary.`);
     const summary = summarizeResults(file ?? 'results');
@@ -85,7 +100,7 @@ function main(args: string[]): void {
     else { process.stdout.write(text); }
     return;
   }
-  if (flags.has('json')) throw new Error('--json only applies to summary.');
+  if (flags.has('json')) throw new Error('--json only applies to summary or timings.');
   if (command === 'retry') {
     if (!file) throw new Error('retry requires a saved run directory.');
     for (const name of ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'trials']) {

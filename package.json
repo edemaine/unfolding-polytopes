@@ -10,6 +10,7 @@
     "search": "civet src/cli.civet search",
     "retry": "civet src/cli.civet retry",
     "summary": "civet src/cli.civet summary",
+    "timings": "civet src/cli.civet timings",
     "bench": "civet bench/overlap.civet",
     "bench:hull": "civet bench/hull.civet",
     "bench:compare": "civet bench/compare.civet",
