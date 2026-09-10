@@ -80,15 +80,32 @@ The implementation uses floating-point geometry, not exact predicates or certifi
 
 ## Algorithm
 
-1. **Convex hull:** enumerate every $d$-subset of the input points. Affinely independent subsets define candidate supporting hyperplanes. Retain those with all points on one side, and merge candidates by their full set of coplanar point indices. Thus nonsimplicial facets remain intact. Two facets are adjacent exactly when their intersection has affine dimension $d-2$.
+1. **Convex hull:** incrementally insert points into a triangulated boundary, then merge coplanar pieces into true facets. Two facets are adjacent exactly when their intersection has affine dimension $d-2$. See [Hull construction](#hull-construction).
 2. **Tree search:** fix one root facet and branch on the first undecided ridge leaving the connected set of placed facets. Either attach its unplaced neighbor or forbid that ridge. Internal edges cannot be selected because they would create cycles. Every spanning tree determines exactly one sequence of these choices. A fixed root loses no unfoldings: changing the root changes only the global Euclidean placement.
 3. **Development:** compute an orthonormal basis along the shared ridge and a perpendicular inward direction in each incident facet. Preserve the ridge pointwise and map the child's inward direction to the negative of the parent's inward direction. This gives an affine isometry into $\mathbb R^{d-1}$ without dimension-specific rotation formulas.
 4. **Intersection:** test whether each newly placed facet overlaps the interior of an already placed facet in $\mathbb R^{d-1}$. The default solves a linear program for the common interior margin. Boundary contact is allowed; see [Intersection algorithms](#intersection-algorithms) for the available methods and their tolerance checks.
 5. **Pruning:** if a new facet overlaps an already placed facet, discard that branch. Descendant attachments cannot change the existing placements. Also discard branches whose remaining ridges cannot connect all facets.
 
-There is no dimension-specific upper bound. Hull construction examines $inom nd$ subsets, and spanning-tree counts grow exponentially. The default intersection method uses the simplex algorithm; its enumeration fallback examines up to $inom md$ linear systems for $m$ combined bounding halfspaces. Start with few vertices and inspect facet counts. Higher dimension can make the computation much harder even if counterexamples are easier to find.
+There is no dimension-specific upper bound. Hull construction can produce exponentially many faces, and spanning-tree counts grow exponentially. The default intersection method uses the simplex algorithm; its enumeration fallback examines up to $\binom md$ linear systems for $m$ combined bounding halfspaces. Start with few vertices and inspect facet counts. Higher dimension can make the computation much harder even if counterexamples are easier to find.
 
 All computational limits default to `Infinity` for both `solve` and `search`. Set `--max-hull-combinations`, `--max-nodes`, or `--timeout-ms` to impose a limit. Node and time limits apply **per polytope** to tree search, excluding hull construction. A hull cutoff is an error, never an exhausted unfolding search. Time checks are cooperative, including during intersection enumeration.
+
+## Hull construction
+
+**`incremental` is the default** in the CLI and API. Hull construction runs once per polytope, before unfolding search.
+
+| Method | Algorithm |
+| --- | --- |
+| `incremental` (default) | Maintain a triangulated boundary while inserting points; merge coplanar pieces into true facets afterward. |
+| `enumerate` | Test every $\binom nd$ subset of input points for a supporting hyperplane. Also serves as the reference and numerical fallback. |
+
+The incremental method uses [beneath-beyond construction](https://qhull.org/html/qh-eg.htm). It chooses an affinely independent initial simplex, then inserts the remaining points in input order. For each outside point, it removes the visible boundary simplices and cones their horizon to the new point. A fixed interior point determines outward orientation. Interior, duplicate, and boundary points require no insertion unless they extend the hull.
+
+The triangulation is only an intermediate representation: coplanar pieces merge using their full sets of input point indices, preserving nonsimplicial facets and redundant boundary points. Both methods use the same final facet ordering and ridge construction. Detected numerical inconsistencies in incremental construction trigger enumeration; the result records the actual `hullMethod` and optional `hullFallback` reason. Both methods use floating-point tolerances and can fail on near-degenerate inputs.
+
+Select a method with `--hull-method incremental|enumerate` on `solve`, `search`, or `retry`, or `convexHull(points, {method: 'incremental'})`. Saved hull options record the requested method. Retries preserve it unless overridden; older records without a method use the current default.
+
+`--max-hull-combinations` limits candidate-plane work, with `Infinity` as the default. Enumeration charges one unit per input subset. Incremental construction charges one per created boundary simplex and one per final simplex checked for merging. A fallback uses only the remaining budget. The total is recorded as `hullCombinations`; it does not count visibility scans or ridge construction.
 
 ## Intersection algorithms
 
@@ -184,17 +201,18 @@ The checks below test **the implementation of hull construction, facet placement
 
 `pnpm test` checks:
 
-- **Hull and development geometry:** known facet/ridge counts, nonsimplicial facets, hinge continuity, and preservation of distances in dimensions 2–6.
+- **Hull and development geometry:** agreement between hull methods on facet/ridge incidence and bounded searches, numerical fallback budgets, known facet/ridge counts, nonsimplicial facets, hinge continuity, and preservation of distances in dimensions 2–6.
 - **Overlap decisions:** containment, crossing intersections, boundary contact, and thin overlaps; agreement with an independent planar separating-axis test and with the enumeration method.
 - **Search completeness and pruning:** known spanning-tree counts and agreement between pruned searches, searches that test only complete trees, and independent small-case enumeration.
 - **Saved jobs:** reproducible generators, CLI options, limits, summaries, and retry/resume behavior.
 
 `pnpm check` type-checks the source, tests, and benchmark scripts without running them. TypeScript is pinned to the 5.x compiler API used by Civet; casing enforcement is disabled to accommodate Civet's virtual paths on Windows.
 
-The benchmarks measure speed while also checking that changing the intersection method preserves results:
+The benchmarks measure speed while checking that changing hull or intersection methods preserves results:
 
 | Command | Correctness checks and timing workload | Report |
 | --- | --- | --- |
+| `pnpm bench:hull` | Compare hull incidence, supporting planes, and searches with an 80-node cap; time hull construction alone. | [Hull construction](bench/README.md#hull-construction) |
 | `pnpm bench` | Compare overlap decisions against `enumerate` on sampled facet pairs, then compare search counts and witness trees with a 120-node cap. | [Fixed examples](bench/README.md) |
 | `pnpm bench:sampled` | Sample parameters and seeds from saved runs; compare pair decisions and searches with a 40-node cap. Also check rotated boxes against analytic thresholds for separation, contact, and thin overlap. | [Sampled examples](bench/README.md#sampled-examples) |
 | `pnpm bench:completed` | Rerun saved successful examples to completion, comparing search counts and witness trees. Time full searches and profile search alone and hull construction plus search. | [Completed searches and CPU profiles](bench/README.md#completed-searches-and-profiling) |

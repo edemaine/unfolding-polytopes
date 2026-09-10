@@ -1,6 +1,6 @@
 # Benchmarks
 
-Run these commands from the repository root after `pnpm install`. All three suites work from a fresh checkout: their inputs are either generated from fixed seeds or stored as exact coordinates and numerical settings.
+Run these commands from the repository root after `pnpm install`. All suites work from a fresh checkout: their inputs are either generated from fixed seeds or stored as exact coordinates and numerical settings.
 
 The scripts and `*-cases.json` fixtures belong in version control. All generated measurements, Markdown reports, logs, CPU profiles, and failure dumps go under **`bench/output/`**, which is ignored by Git. Running a benchmark does not overwrite this README or the committed fixtures.
 
@@ -49,6 +49,16 @@ Uses the ten successful examples in [completed-cases.json](completed-cases.json)
 Two CPU profiles measure repeated full searches with precomputed hulls and repeated hull construction plus search. Startup and input-file reads are outside the profiles. The profiler runs for at least six seconds per workload.
 
 Writes `output/completed-results.json`, `output/completed.md`, and `output/completed-{search,pipeline}.cpuprofile`. Open the profiles in Chrome DevTools to inspect call trees.
+
+## Hull construction
+
+```sh
+pnpm bench:hull
+```
+
+Compares incremental hull construction with enumeration on all 43 sampled and ten completed fixtures, plus cubes and cross polytopes in dimensions 4 and 5. Three repetitions alternate method order. Hull timings exclude input loading and correctness checks. Each case must have identical facet/ridge incidence, matching supporting planes, and identical search counts and witness trees with an 80-node cap. Records any enumeration fallbacks separately.
+
+Writes `output/hull-results.json` with all timings and candidate-plane work counts.
 
 ## Results
 
@@ -141,3 +151,32 @@ Share of CPU samples while repeatedly solving the ten completed examples. Each p
 | Other / runtime | 0.3% | 0.7% |
 
 Overlap checking remains the main search cost. Hull construction becomes comparable to search once the faster intersection backend is used. Garbage-collection samples are shown separately because the profile does not identify which phase allocated the collected objects.
+
+### Hull construction times
+
+Hull-only measurements, using the median of three repetitions for each case, then summing within each row. The 57 cases all matched geometry and bounded searches; none used the enumeration fallback. Duplicate cases shared by the two fixture lists are included twice. The earlier pipeline profiles above used enumeration for hull construction.
+
+| d | Points | Family | Cases | `enumerate` | `incremental` (default) | Speedup |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 2 | 3 | random | 1 | 0.09 | 0.16 | 0.54x |
+| 4 | 5 | random | 3 | 0.37 | 0.80 | 0.46x |
+| 4 | 6 | random | 3 | 1.38 | 1.81 | 0.76x |
+| 4 | 7 | random | 3 | 1.75 | 2.21 | 0.79x |
+| 4 | 8 | cross | 1 | 1.35 | 1.42 | 0.95x |
+| 4 | 8 | random | 3 | 2.80 | 2.41 | 1.16x |
+| 4 | 9 | random | 3 | 4.02 | 3.23 | 1.24x |
+| 4 | 10 | random | 3 | 6.08 | 3.89 | 1.56x |
+| 4 | 11 | random | 5 | 19.20 | 9.89 | 1.94x |
+| 4 | 16 | cube | 1 | 33.08 | 3.39 | 9.77x |
+| 5 | 6 | random | 3 | 0.75 | 1.66 | 0.45x |
+| 5 | 7 | random | 3 | 1.47 | 2.33 | 0.63x |
+| 5 | 9 | random | 5 | 14.86 | 12.04 | 1.23x |
+| 5 | 10 | cross | 1 | 6.06 | 4.29 | 1.41x |
+| 5 | 20 | random | 5 | 1533.17 | 125.59 | 12.21x |
+| 5 | 32 | cube | 1 | 5687.98 | 30.80 | 184.67x |
+| 6 | 12 | random | 5 | 191.81 | 89.91 | 2.13x |
+| 6 | 15 | random | 5 | 969.48 | 190.02 | 5.10x |
+| 6 | 20 | random | 3 | 4305.07 | 271.41 | 15.86x |
+| **Total** | | | **57** | **12780.77** | **757.27** | **16.88x** |
+
+Incremental construction benefits larger point sets most. Its bookkeeping can cost more on tiny hulls. It still scans the current boundary for each inserted point, and final ridge construction compares all pairs of true facets.

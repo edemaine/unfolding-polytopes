@@ -1,7 +1,7 @@
 "civet esCompat";
 import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
-import {overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
+import {hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from './index.civet';
 import type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from './index.civet';
 import type {Vector} from './linalg.civet';
 import {formatSummary, summarizeResults} from './summary.civet';
@@ -33,7 +33,8 @@ Geometry and solver options:
   --tolerance X        Hull tolerance after normalization (default 1e-9)
   --overlap-method NAME dual-lp (default), enumerate, primal-lp, gjk-lp
   --overlap-tolerance X  Interior margin in normalized units (default 16*tolerance)
-  --max-hull-combinations N  Hull work limit (default Infinity)
+  --hull-method NAME   incremental (default) or enumerate
+  --max-hull-combinations N  Candidate-plane work limit (default Infinity)
   --max-nodes N        Tree search work limit (default Infinity)
   --timeout-ms N       Per-polytope tree search time (default Infinity)
   --root N             Root facet index (default 0)
@@ -51,7 +52,7 @@ Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (lim
 Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`;
 
-const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
+const values = new Set(['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials']);
 const switches = new Set(['help', 'all', 'no-prune', 'json']);
 
 function main(args: string[]): void {
@@ -130,7 +131,9 @@ function main(args: string[]): void {
     else { process.stdout.write(json(value)); }
   };
   if (command === 'generate') { output(generate(seed)); return; }
-  const hullOptions: HullOptions = {tolerance: number('tolerance', 1e-9), maxCombinations: limit('max-hull-combinations', Infinity)};
+  const hullMethod = flags.get('hull-method') ?? 'incremental';
+  if (!(hullMethods as readonly string[]).includes(hullMethod)) throw new Error('Invalid --hull-method.');
+  const hullOptions: HullOptions = {method: hullMethod as HullOptions['method'], tolerance: number('tolerance', 1e-9), maxCombinations: limit('max-hull-combinations', Infinity)};
   if (!(hullOptions.tolerance! > 0 && hullOptions.tolerance! < .01)) throw new Error('--tolerance must be between 0 and 0.01.');
   const overlapMethod = flags.get('overlap-method') ?? 'dual-lp';
   if (!(overlapMethods as readonly string[]).includes(String(overlapMethod))) throw new Error('Invalid --overlap-method.');
@@ -146,7 +149,7 @@ function main(args: string[]): void {
     formatVersion: 1, points: input.points, generator: input.generator, hullOptions: usedHull, solveOptions: usedSolve,
     polytope: {
       dimension: poly.dimension, center: poly.center, scale: poly.scale, tolerance: poly.tolerance,
-      hullCombinations: poly.hullCombinations,
+      hullCombinations: poly.hullCombinations, hullMethod: poly.hullMethod, hullFallback: poly.hullFallback,
       facets: poly.facets.map(f => f.vertices),
       ridges: poly.ridges.map(r => ({facets: r.facets, vertices: r.vertices}))
     },
@@ -173,6 +176,7 @@ function main(args: string[]): void {
     let inconclusive = 0;
     const enqueue = (task: TrialTask, effectiveOverlap?: number): void => {
       const usedHull: HullOptions = {
+        method: flags.has('hull-method') ? hullOptions.method : task.hullOptions.method ?? hullOptions.method,
         tolerance: flags.has('tolerance') ? hullOptions.tolerance : task.hullOptions.tolerance ?? hullOptions.tolerance,
         maxCombinations: hullOptions.maxCombinations
       };

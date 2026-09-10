@@ -1,0 +1,48 @@
+"civet esCompat";
+import assert from 'node:assert/strict';
+import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
+import {convexHull, hypercube, crossPolytope, solve} from '../src/index.civet';
+import type {Polytope, HullMethod} from '../src/index.civet';
+import type {BenchmarkCase} from './fixtures.civet';
+
+const fixtures = ['bench/sampled-cases.json', 'bench/completed-cases.json'].flatMap(file => JSON.parse(readFileSync(file, 'utf8')) as BenchmarkCase[]);
+const cases = fixtures.map(c => ({name: `${c.generator.dimension}D n=${c.coordinates.length} seed=${c.generator.seed}`, points: c.coordinates, hull: c.hullOptions, search: c.solveOptions}));
+for (const d of [4, 5]) {
+  cases.push({name: `cube ${d}D`, points: hypercube(d), hull: {}, search: {}});
+  cases.push({name: `cross ${d}D`, points: crossPolytope(d), hull: {}, search: {}});
+}
+const methods: HullMethod[] = ['enumerate', 'incremental'];
+const rows: object[] = [];
+let fallbacks = 0;
+function signature(p: Polytope): object {
+  return {facets: p.facets.map(f => f.vertices), ridges: p.ridges.map(r => ({facets: r.facets, vertices: r.vertices}))};
+}
+for (const [index, item] of cases.entries()) {
+  const elapsed = {enumerate: [] as number[], incremental: [] as number[]};
+  const hulls = {} as Record<HullMethod, Polytope>;
+  for (let round = 0; round < 3; round++) {
+    for (const method of round % 2 ? [...methods].reverse() : methods) {
+      const start = performance.now();
+      hulls[method] = convexHull(item.points, {...item.hull, method});
+      elapsed[method].push(performance.now() - start);
+    }
+  }
+  const a = hulls.enumerate, b = hulls.incremental;
+  assert.deepEqual(signature(a), signature(b), item.name);
+  for (let i = 0; i < a.facets.length; i++) {
+    assert.ok(Math.abs(a.facets[i].offset - b.facets[i].offset) < 1e-8, item.name);
+    assert.ok(a.facets[i].normal.every((x, j) => Math.abs(x - b.facets[i].normal[j]) < 1e-8), item.name);
+  }
+  const sa = solve(a, {...item.search, maxNodes: 80}), sb = solve(b, {...item.search, maxNodes: 80});
+  assert.equal(sa.status, sb.status, item.name);
+  assert.deepEqual(sa.tree, sb.tree, item.name);
+  assert.deepEqual({...sa.stats, elapsedMs: 0}, {...sb.stats, elapsedMs: 0}, item.name);
+  if (b.hullFallback) fallbacks++;
+  const median = (xs: number[]): number => [...xs].sort((x, y) => x - y)[1];
+  const enumerateMs = median(elapsed.enumerate), incrementalMs = median(elapsed.incremental);
+  rows.push({name: item.name, dimension: a.dimension, points: item.points.length, facets: a.facets.length, enumerateMs, incrementalMs, speedup: enumerateMs / incrementalMs, elapsed, enumerateWork: a.hullCombinations, incrementalWork: b.hullCombinations, actualMethod: b.hullMethod, fallback: b.hullFallback});
+  console.log(`[${index + 1}/${cases.length}] ${item.name}: ${enumerateMs.toFixed(2)} -> ${incrementalMs.toFixed(2)} ms (${(enumerateMs / incrementalMs).toFixed(2)}x)`);
+}
+mkdirSync('bench/output', {recursive: true});
+writeFileSync('bench/output/hull-results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, rounds: 3, searchNodeLimit: 80, fallbacks, rows}, null, 2) + '\n');
+console.log(`${cases.length} hull and search comparisons passed; ${fallbacks} fallbacks. Results: bench/output/hull-results.json`);

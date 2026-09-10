@@ -137,6 +137,46 @@ test('primal overlap backends: contact, thin overlaps, random pairs, and trees',
   }
 });
 
+test('incremental hull agrees with enumeration across dimensions and degeneracies', () => {
+  function compare(points: Vector[]): void {
+    const old = convexHull(points, {method: 'enumerate'});
+    const next = convexHull(points, {method: 'incremental'});
+    assert.equal(next.hullMethod, 'incremental', next.hullFallback ?? 'Unexpected enumeration fallback');
+    assert.deepEqual(next.facets.map(f => f.vertices), old.facets.map(f => f.vertices));
+    assert.deepEqual(next.ridges.map(r => ({facets: r.facets, vertices: r.vertices})), old.ridges.map(r => ({facets: r.facets, vertices: r.vertices})));
+    for (let i = 0; i < old.facets.length; i++) {
+      near(next.facets[i].normal, old.facets[i].normal);
+      close(next.facets[i].offset, old.facets[i].offset);
+    }
+    const a = solve(old, {maxNodes: 80}), b = solve(next, {maxNodes: 80});
+    assert.equal(a.status, b.status);
+    assert.deepEqual(a.tree, b.tree);
+    assert.deepEqual({...a.stats, elapsedMs: 0}, {...b.stats, elapsedMs: 0});
+  }
+  for (let d = 2; d <= 6; d++) {
+    compare(simplex(d));
+    for (const distribution of ['sphere', 'ball', 'box', 'gaussian'] as const) {
+      for (let seed = 0; seed < 5; seed++) compare(randomPoints(d, d + 3, seed, distribution).map(p => p.map((x, j) => x * (j === 0 && seed === 4 ? 0.01 : 1))));
+    }
+  }
+  for (let d = 2; d <= 4; d++) {
+    const cube = hypercube(d);
+    compare(cube); compare(crossPolytope(d));
+    compare([...cube].reverse());
+    compare([Array(d).fill(0), cube[0], ...cube, cube[0], cube[0].map((x, j) => j === 0 ? 0 : x)]);
+  }
+  compare(hypersimplex(4, 2)); compare(prism(simplex(3))); compare(pyramid(hypercube(3))); compare(cyclic(4, 8));
+  const thin = [[0, 0], [1, 0], [0, 1.2e-9]];
+  const fallback = convexHull(thin, {method: 'incremental', maxCombinations: 4});
+  assert.equal(fallback.hullMethod, 'enumerate');
+  assert.match(fallback.hullFallback!, /orientation/);
+  assert.equal(fallback.hullCombinations, 4);
+  assert.deepEqual(fallback.facets, convexHull(thin, {method: 'enumerate'}).facets);
+  assert.throws(() => convexHull(thin, {method: 'incremental', maxCombinations: 3}), /budget exceeded/);
+  assert.throws(() => convexHull(simplex(3), {method: 'incremental', maxCombinations: 0}), /budget exceeded/);
+  assert.throws(() => convexHull(simplex(3), {method: 'incremental', maxCombinations: 4}), /budget exceeded/);
+});
+
 test('hull combinatorics in dimensions 2 through 6', () => {
   for (let d = 2; d <= 6; d++) {
     const p = convexHull(simplex(d));
@@ -327,7 +367,7 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
   try {
     const source = join(directory, 'source');
     mkdirSync(source);
-    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp']);
+    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp', '--hull-method', 'incremental']);
     assert.equal(cutoff.status, 0, String(cutoff.stderr));
     const original = JSON.parse(String(cutoff.stdout));
     assert.equal(original.result.status, 'inconclusive');
@@ -355,6 +395,8 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.equal(saved.solveOptions.maxNodes, 'Infinity');
     assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
     assert.equal(saved.hullOptions.tolerance, 1e-8);
+    assert.equal(saved.hullOptions.method, 'incremental');
+    assert.equal(saved.polytope.hullMethod, 'incremental');
     assert.equal(saved.solveOptions.overlapTolerance, 1e-7);
     assert.equal(saved.solveOptions.overlapMethod, 'dual-lp');
     assert.equal(saved.result.overlapMethod, 'dual-lp');
@@ -371,13 +413,14 @@ test('retry selects inconclusive files, preserves settings, resets limits, and s
     assert.match(String(empty.stderr), /No inconclusive trials/);
     assert.equal(existsSync(emptyOutput), false);
     const limitedOutput = join(directory, 'limited');
-    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--output', limitedOutput]);
+    const limited = cli(['retry', source, '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--output', limitedOutput]);
     assert.equal(limited.status, 0, String(limited.stderr));
     const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
     const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
     assert.equal(limitedSaved.result.status, 'inconclusive');
     assert.equal(limitedSaved.solveOptions.maxNodes, 0);
     assert.equal(limitedSaved.hullOptions.tolerance, 1e-10);
+    assert.equal(limitedSaved.hullOptions.method, 'enumerate');
     assert.equal(limitedSaved.solveOptions.overlapTolerance, 1e-9);
     assert.equal(limitedSaved.solveOptions.root, 0);
     assert.equal(limitedSaved.solveOptions.overlapMethod, 'gjk-lp');

@@ -11,6 +11,7 @@
     "retry": "civet src/cli.civet retry",
     "summary": "civet src/cli.civet summary",
     "bench": "civet bench/overlap.civet",
+    "bench:hull": "civet bench/hull.civet",
     "bench:select-sampled": "civet bench/select-sampled.civet",
     "bench:sampled": "civet bench/sampled.civet",
     "bench:sampled-report": "civet bench/sampled-report.civet",
