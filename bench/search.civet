@@ -1,17 +1,16 @@
-"civet esCompat";
-import assert from 'node:assert/strict';
-import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
-import {resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
-import {convexHull, randomPoints, solve, developTree, interiorOverlap} from '../src/index.civet';
-import type {SolveOptions} from '../src/index.civet';
-import type {BenchmarkCase} from './fixtures.civet';
+import assert from 'node:assert/strict'
+import {readFileSync, writeFileSync, mkdirSync} from 'node:fs'
+import {resolve} from 'node:path'
+import {pathToFileURL} from 'node:url'
+import {convexHull, randomPoints, solve, developTree, interiorOverlap} from '../src/index.civet'
+import type {SolveOptions} from '../src/index.civet'
+import type {BenchmarkCase} from './fixtures.civet'
 
-const reference = process.argv[2] ? await import(pathToFileURL(resolve(process.argv[2])).href) as {solve: typeof solve} : undefined;
-const fixtures = JSON.parse(readFileSync('bench/completed-cases.json', 'utf8')) as BenchmarkCase[];
-const cases = fixtures.map(c => ({name: `${c.generator.dimension}D/${c.coordinates.length}/${c.generator.seed}`, points: c.coordinates, hullOptions: c.hullOptions, options: c.solveOptions}));
+const reference = process.argv[2] ? await import(pathToFileURL(resolve(process.argv[2])).href) as {solve: typeof solve} : undefined
+const fixtures = JSON.parse(readFileSync('bench/completed-cases.json', 'utf8')) as BenchmarkCase[]
+const cases = fixtures.map((c) => ({name: `${c.generator.dimension}D/${c.coordinates.length}/${c.generator.seed}`, points: c.coordinates, hullOptions: c.hullOptions, options: c.solveOptions}))
 for (const [d, n, seed] of [[4, 9, 88516], [4, 10, 53826], [4, 11, 17273]]) {
-  cases.push({name: `${d}D/${n}/${seed}`, points: randomPoints(d, n, seed), hullOptions: {}, options: {}});
+  cases.push({name: `${d}D/${n}/${seed}`, points: randomPoints(d, n, seed), hullOptions: {}, options: {}})
 }
 const methods: [string, SolveOptions][] = [
   ['bridges', {forwardCheck: false, branchOrder: 'index'}],
@@ -20,31 +19,31 @@ const methods: [string, SolveOptions][] = [
   ['index', {forwardCheck: 'auto', branchOrder: 'index'}],
   ['constrained', {forwardCheck: 'auto', branchOrder: 'constrained'}],
   ['bottleneck', {forwardCheck: 'auto', branchOrder: 'bottleneck'}]
-];
-const rows: object[] = [];
-mkdirSync('bench/output', {recursive: true});
+]
+const rows: object[] = []
+mkdirSync('bench/output', {recursive: true})
 for (const item of cases) {
-  const poly = convexHull(item.points, item.hullOptions);
-  const verified = new Set<string>();
+  const poly = convexHull(item.points, item.hullOptions)
+  const verified = new Set<string>()
   for (let round = 0; round < 3; round++) {
-    const order = [...methods.slice(round), ...methods.slice(0, round)];
-    if (reference) order.push(['reference', {}]);
+    const order = [...methods.slice(round), ...methods.slice(0, round)]
+    if (reference) order.push(['reference', {}])
     for (const [method, extra] of order) {
-      const result = (method === 'reference' ? reference!.solve : solve)(poly, {...item.options, forceBridges: true, ...extra, maxNodes: 50000, timeoutMs: 2000, overlapMethod: 'dual-lp'});
-      const witness = result.tree?.slice().sort((a, b) => a - b).join(',');
-      if (result.tree && !verified.has(witness!)) {
+      const result = (method is 'reference' ? reference!.solve : solve)(poly, {...item.options, forceBridges: true, ...extra, maxNodes: 50000, timeoutMs: 2000, overlapMethod: 'dual-lp'})
+      const witness = result.tree?.slice().sort((a, b) => a - b).join(',')
+      if (result.tree and not verified.has(witness!)) {
         // Check every pair, including hinges, using enumeration independently of
         // the new search's forward checks and parent shortcut. Outside timing.
-        const faces = developTree(poly, result.tree, item.options.root ?? 0);
+        const faces = developTree(poly, result.tree, item.options.root ?? 0)
         for (let a = 0; a < faces.length; a++) for (let b = 0; b < a; b++) {
-          assert.equal(interiorOverlap(faces[a], faces[b], result.overlapTolerance, undefined, 'enumerate'), false, `${item.name} ${method}`);
+          assert.equal(interiorOverlap(faces[a], faces[b], result.overlapTolerance, undefined, 'enumerate'), false, `${item.name} ${method}`)
         }
-        verified.add(witness!);
+        verified.add(witness!)
       }
-      rows.push({name: item.name, method, round, status: result.status, termination: result.termination, stats: result.stats, overlapStats: result.overlapStats, searchOptions: result.searchOptions, searchStats: result.searchStats});
-      console.log(`${item.name} ${method} r${round}: ${result.status}, ${result.stats.nodes} nodes, ${result.stats.elapsedMs.toFixed(2)}ms`);
-      writeFileSync('bench/output/search-results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, maxNodes: 50000, timeoutMs: 2000, rows}, null, 2));
+      rows.push({name: item.name, method, round, status: result.status, termination: result.termination, stats: result.stats, overlapStats: result.overlapStats, searchOptions: result.searchOptions, searchStats: result.searchStats})
+      console.log(`${item.name} ${method} r${round}: ${result.status}, ${result.stats.nodes} nodes, ${result.stats.elapsedMs.toFixed(2)}ms`)
+      writeFileSync('bench/output/search-results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, maxNodes: 50000, timeoutMs: 2000, rows}, null, 2))
     }
   }
 }
-console.log('All returned witnesses passed enumeration overlap checks. Results: bench/output/search-results.json');
+console.log('All returned witnesses passed enumeration overlap checks. Results: bench/output/search-results.json')

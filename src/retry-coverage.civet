@@ -1,135 +1,134 @@
-"civet esCompat";
-import {basename, dirname, join, resolve} from 'node:path';
-import {trialName} from './jobs.civet';
+import {basename, dirname, join, resolve} from 'node:path'
+import {trialName} from './jobs.civet'
 
 export interface RetryCoverage {
-  resolved: number;
-  remaining: number | null;
-  viaRetries: number;
-  complete: boolean;
-  directories: string[];
-  inProgress: number;
-  duplicateAssignments: number;
-  unassigned: number | null;
-  workers: {directory: string; pid: number; trials: number}[];
+  resolved: number
+  remaining: number | null
+  viaRetries: number
+  complete: boolean
+  directories: string[]
+  inProgress: number
+  duplicateAssignments: number
+  unassigned: number | null
+  workers: {directory: string; pid: number; trials: number}[]
 }
 export interface CoverageRun {
-  directory: string;
-  expected: number | null;
-  metadata: any;
-  saved: Set<string>;
-  resolved: Set<string>;
-  attempted?: Set<string>;
-  state?: string;
-  pid?: number | null;
+  directory: string
+  expected: number | null
+  metadata: any
+  saved: Set<string>
+  resolved: Set<string>
+  attempted?: Set<string>
+  state?: string
+  pid?: number | null
 }
-const key = (path: string): string => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
-const trial = (name: unknown): name is string => typeof name === 'string' && /^trial-[^\\/]+\.json$/.test(name);
+const key = (path: string): string => process.platform is 'win32' ? resolve(path).toLowerCase() : resolve(path)
+const trial = (name: unknown): name is string => typeof name is 'string' and /^trial-[^\\/]+\.json$/.test(name)
 
 // Index only trials mentioned by retries. Ordinary successful trials need no
 // global graph entries, and neither this pass nor its callers read coordinates.
 export function retryCoverage(runs: CoverageRun[], links: [string, string][]) {
-  const parents = new Map<string, string>();
+  const parents = new Map<string, string>()
   function root(path: string): string {
-    if (!parents.has(path)) parents.set(path, path);
-    let end = path;
-    while (parents.get(end)! !== end) end = parents.get(end)!;
+    if (not parents.has(path)) parents.set(path, path)
+    let end = path
+    while (parents.get(end)! !== end) end = parents.get(end)!
     while (path !== end) { const next = parents.get(path)!; parents.set(path, end); path = next; }
-    return end;
+    return end
   }
-  const connect = (a: string, b: string): void => { parents.set(root(key(a)), root(key(b))); };
-  const byDirectory = new Map(runs.map(run => [key(run.directory), run]));
-  const plans = new Map<CoverageRun, Set<string>>();
+  const connect = (a: string, b: string): void => { parents.set(root(key(a)), root(key(b))); }
+  const byDirectory = new Map(runs.map((run) => [key(run.directory), run]))
+  const plans = new Map<CoverageRun, Set<string>>()
   for (const run of runs) {
-    const m = run.metadata;
+    const m = run.metadata
     if (Array.isArray(m.tasks)) {
-      const names = new Set<string>();
+      const names = new Set<string>()
       for (const task of m.tasks) if (trial(task?.name)) {
-        names.add(task.name);
-        if (typeof task.sourceFile === 'string') connect(join(run.directory, task.name), task.sourceFile);
+        names.add(task.name)
+        if (typeof task.sourceFile is 'string') connect(join(run.directory, task.name), task.sourceFile)
       }
-      plans.set(run, names);
+      plans.set(run, names)
     } else if (Array.isArray(m.sourceFiles)) {
-      const names = new Set<string>();
-      for (const [i, file] of m.sourceFiles.entries()) if (typeof file === 'string') {
-        const name = (m.sourceDirectories?.length ?? 1) > 1 ? `trial-${String(i).padStart(6, '0')}.json` : basename(file);
-        if (!trial(name)) continue;
-        names.add(name); connect(join(run.directory, name), file);
+      const names = new Set<string>()
+      for (const [i, file] of m.sourceFiles.entries()) if (typeof file is 'string') {
+        const name = (m.sourceDirectories?.length ?? 1) > 1 ? `trial-${String(i).padStart(6, '0')}.json` : basename(file)
+        if (not trial(name)) continue
+        names.add(name); connect(join(run.directory, name), file)
       }
-      plans.set(run, names);
+      plans.set(run, names)
     }
   }
-  for (const [a, b] of links) connect(a, b);
-  const winners = new Map<string, Set<string>>();
+  for (const [a, b] of links) connect(a, b)
+  const winners = new Map<string, Set<string>>()
   for (const path of parents.keys()) {
-    const run = byDirectory.get(key(dirname(path)));
-    if (!run?.resolved.has(basename(path))) continue;
-    const id = root(path);
-    if (!winners.has(id)) winners.set(id, new Set());
-    winners.get(id)!.add(run.directory);
+    const run = byDirectory.get(key(dirname(path)))
+    if (not run?.resolved.has(basename(path))) continue
+    const id = root(path)
+    if (not winners.has(id)) winners.set(id, new Set())
+    winners.get(id)!.add(run.directory)
   }
-  const result = new Map<string, RetryCoverage>();
-  const directories = new Map<CoverageRun, Set<string>>();
-  const active = new Map<string, Set<CoverageRun>>();
-  const assignments = new Map<CoverageRun, Map<CoverageRun, number>>();
+  const result = new Map<string, RetryCoverage>()
+  const directories = new Map<CoverageRun, Set<string>>()
+  const active = new Map<string, Set<CoverageRun>>()
+  const assignments = new Map<CoverageRun, Map<CoverageRun, number>>()
   for (const run of runs) {
-    if (run.state !== 'running' || !run.pid) continue;
+    if (run.state !== 'running' or not run.pid) continue
     for (const name of plans.get(run) ?? []) {
-      if ((run.attempted ?? run.saved).has(name)) continue;
-      const id = root(key(join(run.directory, name)));
-      if (winners.has(id)) continue;
-      if (!active.has(id)) active.set(id, new Set());
-      active.get(id)!.add(run);
+      if ((run.attempted ?? run.saved).has(name)) continue
+      const id = root(key(join(run.directory, name)))
+      if (winners.has(id)) continue
+      if (not active.has(id)) active.set(id, new Set())
+      active.get(id)!.add(run)
     }
   }
   for (const run of runs) {
-    result.set(run.directory, {resolved: run.resolved.size, remaining: null, viaRetries: 0, complete: false, directories: [], inProgress: 0, duplicateAssignments: 0, unassigned: null, workers: []});
-    directories.set(run, new Set());
-    assignments.set(run, new Map());
+    result.set(run.directory, {resolved: run.resolved.size, remaining: null, viaRetries: 0, complete: false, directories: [], inProgress: 0, duplicateAssignments: 0, unassigned: null, workers: []})
+    directories.set(run, new Set())
+    assignments.set(run, new Map())
   }
   for (const path of parents.keys()) {
-    const run = byDirectory.get(key(dirname(path))), name = basename(path);
-    if (!run || run.resolved.has(name)) continue;
-    const plan = plans.get(run), m = run.metadata;
-    if (plan) { if (!plan.has(name)) continue; }
-    else if (!run.saved.has(name)) {
+    const run = byDirectory.get(key(dirname(path))), name = basename(path)
+    if (not run or run.resolved.has(name)) continue
+    const plan = plans.get(run), m = run.metadata
+    if (plan) { if (not plan.has(name)) continue; }
+    else if (not run.saved.has(name)) {
       // Missing search trials must belong to the exact reserved seed range.
-      const match = /^trial-(\d+)-seed-(-?\d+)\.json$/.exec(name);
-      const index = match ? Number(match[1]) : NaN;
-      if (m.generator?.family !== 'random' || !Number.isSafeInteger(m.seed) || !Number.isSafeInteger(index) || index < 0 ||
-          run.expected === null || index >= run.expected || trialName(index, m.seed + index) !== name) continue;
+      const match = /^trial-(\d+)-seed-(-?\d+)\.json$/.exec(name)
+      const index = match ? Number(match[1]) : NaN
+      if (m.generator?.family !== 'random' or not Number.isSafeInteger(m.seed) or not Number.isSafeInteger(index) or index < 0 or
+          run.expected === null or index >= run.expected or trialName(index, m.seed + index) !== name) continue
     }
-    const completedBy = [...(winners.get(root(path)) ?? [])].filter(directory => key(directory) !== key(run.directory));
-    const coverage = result.get(run.directory)!;
+    const completedBy = [...(winners.get(root(path)) ?? [])].filter((directory) => key(directory) !== key(run.directory))
+    const coverage = result.get(run.directory)!
     if (completedBy.length) {
-      coverage.resolved++; coverage.viaRetries++;
-      for (const directory of completedBy) directories.get(run)!.add(directory);
+      coverage.resolved++; coverage.viaRetries++
+      for (const directory of completedBy) directories.get(run)!.add(directory)
     } else {
-      const workers = [...(active.get(root(path)) ?? [])].filter(worker => worker !== run);
-      if (workers.length) coverage.inProgress++;
-      if (workers.length > 1) coverage.duplicateAssignments++;
+      const workers = [...(active.get(root(path)) ?? [])].filter((worker) => worker !== run)
+      if (workers.length) coverage.inProgress++
+      if (workers.length > 1) coverage.duplicateAssignments++
       for (const worker of workers) {
-        const counts = assignments.get(run)!;
-        counts.set(worker, (counts.get(worker) ?? 0) + 1);
+        const counts = assignments.get(run)!
+        counts.set(worker, (counts.get(worker) ?? 0) + 1)
       }
     }
   }
   for (const run of runs) {
-    const coverage = result.get(run.directory)!;
-    coverage.remaining = run.expected === null ? null : Math.max(0, run.expected - coverage.resolved);
-    coverage.complete = run.expected !== null && coverage.resolved === run.expected;
-    coverage.directories = [...directories.get(run)!].sort();
-    coverage.unassigned = coverage.remaining === null ? null : Math.max(0, coverage.remaining - coverage.inProgress);
+    const coverage = result.get(run.directory)!
+    coverage.remaining = run.expected === null ? null : Math.max(0, run.expected - coverage.resolved)
+    coverage.complete = run.expected !== null and coverage.resolved is run.expected
+    coverage.directories = [...directories.get(run)!].sort()
+    coverage.unassigned = coverage.remaining === null ? null : Math.max(0, coverage.remaining - coverage.inProgress)
     coverage.workers = [...assignments.get(run)!].map(([worker, trials]) => ({directory: worker.directory, pid: worker.pid!, trials}))
-      .sort((a, b) => a.directory.localeCompare(b.directory));
+      .sort((a, b) => a.directory.localeCompare(b.directory))
   }
   return {
     runs: result,
     identity: (file: string): string => { const path = key(file); return parents.has(path) ? root(path) : path; },
     isResolved: (file: string): boolean => {
-      const path = key(file);
-      return byDirectory.get(key(dirname(path)))?.resolved.has(basename(path)) === true ||
-        parents.has(path) && winners.has(root(path));
+      const path = key(file)
+      return byDirectory.get(key(dirname(path)))?.resolved.has(basename(path)) is true or
+        parents.has(path) and winners.has(root(path))
     }
-  };
+  }
 }

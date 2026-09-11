@@ -1,175 +1,174 @@
-"civet esCompat";
-import {dirname, join, relative} from 'node:path';
-import {readFileSync} from 'node:fs';
-import {summarizeResults} from './summary.civet';
+import {dirname, join, relative} from 'node:path'
+import {readFileSync} from 'node:fs'
+import {summarizeResults} from './summary.civet'
 
 export interface TimingDistribution {
-  count: number;
-  totalMs: number;
-  minMs: number;
-  medianMs: number;
-  p90Ms: number;
-  p99Ms: number;
-  p999Ms: number;
-  maxMs: number;
-  overSecond: number;
-  overMinute: number;
-  overHour: number;
-  overDay: number;
+  count: number
+  totalMs: number
+  minMs: number
+  medianMs: number
+  p90Ms: number
+  p99Ms: number
+  p999Ms: number
+  maxMs: number
+  overSecond: number
+  overMinute: number
+  overHour: number
+  overDay: number
 }
 export interface NodeDistribution {
-  count: number;
-  totalNodes: number;
-  minNodes: number;
-  medianNodes: number;
-  p90Nodes: number;
-  p99Nodes: number;
-  p999Nodes: number;
-  maxNodes: number;
-  overThousand: number;
-  overMillion: number;
-  overBillion: number;
+  count: number
+  totalNodes: number
+  minNodes: number
+  medianNodes: number
+  p90Nodes: number
+  p99Nodes: number
+  p999Nodes: number
+  maxNodes: number
+  overThousand: number
+  overMillion: number
+  overBillion: number
 }
 interface GroupParameters {
-  directory?: string;
-  dimension: number | null;
-  points: number | null;
-  outcome: string;
-  parameters: {family?: string; distribution?: string; scales?: number[]; weight?: number};
+  directory?: string
+  dimension: number | null
+  points: number | null
+  outcome: string
+  parameters: {family?: string; distribution?: string; scales?: number[]; weight?: number}
 }
-export type TimingGroup = GroupParameters & (TimingDistribution | NodeDistribution);
+export type TimingGroup = GroupParameters & (TimingDistribution | NodeDistribution)
 export interface TimingReport {
-  metric: 'time' | 'nodes';
-  directory: string;
-  byRun: boolean;
-  includeTimeouts: boolean;
-  omittedTimeouts: number;
-  groups: TimingGroup[];
-  totals: ((TimingDistribution | NodeDistribution) & {outcome: string})[];
-  savedAttempts: number;
-  missingTimes?: number;
-  missingNodes?: number;
-  unreadable: number;
-  warnings: string[];
+  metric: 'time' | 'nodes'
+  directory: string
+  byRun: boolean
+  includeTimeouts: boolean
+  omittedTimeouts: number
+  groups: TimingGroup[]
+  totals: ((TimingDistribution | NodeDistribution) & {outcome: string})[]
+  savedAttempts: number
+  missingTimes?: number
+  missingNodes?: number
+  unreadable: number
+  warnings: string[]
 }
 
 function distribution(values: number[], nodes: boolean): TimingDistribution | NodeDistribution {
-  values.sort((a, b) => a - b);
-  const percentile = (p: number): number => values[Math.ceil(p * values.length) - 1];
+  values.sort((a, b) => a - b)
+  const percentile = (p: number): number => values[Math.ceil(p * values.length) - 1]
   if (nodes) {
-    const result: NodeDistribution = {count: values.length, totalNodes: 0, minNodes: values[0], medianNodes: percentile(.5), p90Nodes: percentile(.9), p99Nodes: percentile(.99), p999Nodes: percentile(.999), maxNodes: values.at(-1)!, overThousand: 0, overMillion: 0, overBillion: 0};
+    const result: NodeDistribution = {count: values.length, totalNodes: 0, minNodes: values[0], medianNodes: percentile(.5), p90Nodes: percentile(.9), p99Nodes: percentile(.99), p999Nodes: percentile(.999), maxNodes: values.at(-1)!, overThousand: 0, overMillion: 0, overBillion: 0}
     for (const value of values) {
-      result.totalNodes += value;
-      if (value > 1000) result.overThousand++;
-      if (value > 1000000) result.overMillion++;
-      if (value > 1000000000) result.overBillion++;
+      result.totalNodes += value
+      if (value > 1000) result.overThousand++
+      if (value > 1000000) result.overMillion++
+      if (value > 1000000000) result.overBillion++
     }
-    return result;
+    return result
   }
-  const result: TimingDistribution = {count: values.length, totalMs: 0, minMs: values[0], medianMs: percentile(.5), p90Ms: percentile(.9), p99Ms: percentile(.99), p999Ms: percentile(.999), maxMs: values.at(-1)!, overSecond: 0, overMinute: 0, overHour: 0, overDay: 0};
+  const result: TimingDistribution = {count: values.length, totalMs: 0, minMs: values[0], medianMs: percentile(.5), p90Ms: percentile(.9), p99Ms: percentile(.99), p999Ms: percentile(.999), maxMs: values.at(-1)!, overSecond: 0, overMinute: 0, overHour: 0, overDay: 0}
   for (const value of values) {
-    result.totalMs += value;
-    if (value > 1000) result.overSecond++;
-    if (value > 60000) result.overMinute++;
-    if (value > 3600000) result.overHour++;
-    if (value > 86400000) result.overDay++;
+    result.totalMs += value
+    if (value > 1000) result.overSecond++
+    if (value > 60000) result.overMinute++
+    if (value > 3600000) result.overHour++
+    if (value > 86400000) result.overDay++
   }
-  return result;
+  return result
 }
 
 export function summarizeTimings(path = 'results', byRun = false, includeTimeouts = false, nodes = false): TimingReport {
-  const groups = new Map<string, GroupParameters & {values: number[]}>();
-  const totals = new Map<string, number[]>();
-  const generators = new Map<string, {common: any; tasks: Map<string, any>}>();
-  const sources = new Map<string, any>();
+  const groups = new Map<string, GroupParameters & {values: number[]}>()
+  const totals = new Map<string, number[]>()
+  const generators = new Map<string, {common: any; tasks: Map<string, any>}>()
+  const sources = new Map<string, any>()
   function sourceGenerator(metadata: any, seen = new Set<string>()): any {
-    if (metadata?.generator) return metadata.generator;
-    const source = metadata?.sourceDirectory;
-    if (typeof source !== 'string' || seen.has(source)) return undefined;
-    if (sources.has(source)) return sources.get(source);
-    seen.add(source);
-    let generator: any;
+    if (metadata?.generator) return metadata.generator
+    const source = metadata?.sourceDirectory
+    if (typeof source !== 'string' or seen.has(source)) return undefined
+    if (sources.has(source)) return sources.get(source)
+    seen.add(source)
+    let generator: any
     try { generator = sourceGenerator(JSON.parse(readFileSync(join(source, 'run.json'), 'utf8')), seen); } catch {}
-    sources.set(source, generator);
-    return generator;
+    sources.set(source, generator)
+    return generator
   }
-  let missingTimes = 0;
-  let omittedTimeouts = 0;
+  let missingTimes = 0
+  let omittedTimeouts = 0
   // Reuse summary's journal deduplication, saved-file checks, and fallback reader.
   const summary = summarizeResults(path, (run, row, metadata) => {
     const value = nodes ? row.nodes : row.elapsedMs;
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || nodes && !Number.isSafeInteger(value)) { missingTimes++; return; }
-    if (!includeTimeouts && row.termination === 'timeout') { omittedTimeouts++; return; }
+    if (typeof value !== 'number' or not Number.isFinite(value) or value < 0 or nodes and not Number.isSafeInteger(value)) { missingTimes++; return; }
+    if (not includeTimeouts and row.termination is 'timeout') { omittedTimeouts++; return; }
     let outcome = row.status;
-    if (row.termination === 'timeout') { outcome = row.status === 'found' ? 'found/timeout' : 'timeout'; }
-    else if (row.termination === 'maxNodes') { outcome = row.status === 'found' ? 'found/node-limit' : 'node-limit'; }
+    if (row.termination is 'timeout') { outcome = row.status is 'found' ? 'found/timeout' : 'timeout'; }
+    else if (row.termination is 'maxNodes') { outcome = row.status is 'found' ? 'found/node-limit' : 'node-limit'; }
     let saved = generators.get(run.directory);
-    if (!saved) {
+    if (not saved) {
       saved = {common: sourceGenerator(metadata), tasks: new Map()};
-      for (const task of Array.isArray(metadata.tasks) ? metadata.tasks : []) if (task?.generator && typeof task.name === 'string') saved.tasks.set(task.name, task.generator);
+      for (const task of Array.isArray(metadata.tasks) ? metadata.tasks : []) if (task?.generator and typeof task.name is 'string') saved.tasks.set(task.name, task.generator);
       generators.set(run.directory, saved);
     }
-    const generator = row.generator ?? saved.tasks.get(row.file) ?? saved.common ?? (typeof row.sourceFile === 'string' ? sourceGenerator({sourceDirectory: dirname(row.sourceFile)}) : undefined);
-    const dimension = Number.isSafeInteger(generator?.dimension) && generator.dimension >= 2 ? generator.dimension : run.dimension;
-    const points = Number.isSafeInteger(generator?.count) && generator.count >= 0 ? generator.count : run.points;
-    const family = typeof generator?.family === 'string' ? generator.family : generator ? 'random' : undefined;
+    const generator = row.generator ?? saved.tasks.get(row.file) ?? saved.common ?? (typeof row.sourceFile is 'string' ? sourceGenerator({sourceDirectory: dirname(row.sourceFile)}) : undefined);
+    const dimension = Number.isSafeInteger(generator?.dimension) and generator.dimension >= 2 ? generator.dimension : run.dimension;
+    const points = Number.isSafeInteger(generator?.count) and generator.count >= 0 ? generator.count : run.points;
+    const family = typeof generator?.family is 'string' ? generator.family : generator ? 'random' : undefined;
     const parameters: TimingGroup['parameters'] = {family};
-    if (family === 'random') parameters.distribution = typeof generator.distribution === 'string' ? generator.distribution : 'sphere';
-    if (family === 'hypersimplex' && Number.isFinite(generator.weight)) parameters.weight = generator.weight;
-    if (dimension !== null && generator) {
-      if (generator.scales === undefined) { parameters.scales = Array(dimension).fill(1); }
-      else if (Array.isArray(generator.scales) && generator.scales.length === dimension && generator.scales.every((s: unknown) => typeof s === 'number' && Number.isFinite(s))) { parameters.scales = generator.scales; }
+    if (family is 'random') parameters.distribution = typeof generator.distribution is 'string' ? generator.distribution : 'sphere';
+    if (family is 'hypersimplex' and Number.isFinite(generator.weight)) parameters.weight = generator.weight;
+    if (dimension !== null and generator) {
+      if (generator.scales is undefined) { parameters.scales = Array(dimension).fill(1); }
+      else if (Array.isArray(generator.scales) and generator.scales.length is dimension and generator.scales.every((s: unknown) => typeof s is 'number' and Number.isFinite(s))) { parameters.scales = generator.scales; }
     }
     const directory = byRun ? run.directory : undefined;
     const key = JSON.stringify([directory, dimension, points, parameters, outcome]);
     let group = groups.get(key);
-    if (!group) {
+    if (not group) {
       group = {directory, dimension, points, parameters, outcome, values: []};
       groups.set(key, group);
     }
     group.values.push(value);
-    if (!totals.has(outcome)) totals.set(outcome, []);
+    if (not totals.has(outcome)) totals.set(outcome, []);
     totals.get(outcome)!.push(value);
-  });
-  const compare = (a: number | null, b: number | null): number => a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
-  const ordered = [...groups.values()].sort((a, b) => compare(a.dimension, b.dimension) || compare(a.points, b.points) || JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters)) || (a.directory ?? '').localeCompare(b.directory ?? '') || a.outcome.localeCompare(b.outcome));
+  })
+  const compare = (a: number | null, b: number | null): number => a is b ? 0 : a === null ? 1 : b === null ? -1 : a - b
+  const ordered = [...groups.values()].sort((a, b) => compare(a.dimension, b.dimension) or compare(a.points, b.points) or JSON.stringify(a.parameters).localeCompare(JSON.stringify(b.parameters)) or (a.directory ?? '').localeCompare(b.directory ?? '') or a.outcome.localeCompare(b.outcome))
   return {directory: summary.directory, metric: nodes ? 'nodes' : 'time', byRun, includeTimeouts, omittedTimeouts,
     groups: ordered.map(({values, ...group}) => ({...group, ...distribution(values, nodes)})),
     totals: [...totals].sort(([a], [b]) => a.localeCompare(b)).map(([outcome, values]) => ({outcome, ...distribution(values, nodes)})),
-    savedAttempts: summary.totals.trials, ...(nodes ? {missingNodes: missingTimes} : {missingTimes}), unreadable: summary.totals.unreadable, warnings: summary.warnings};
+    savedAttempts: summary.totals.trials, ...(nodes ? {missingNodes: missingTimes} : {missingTimes}), unreadable: summary.totals.unreadable, warnings: summary.warnings}
 }
 
 function duration(ms: number): string {
-  if (ms < 1000) return `${ms.toFixed(2)}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`;
-  if (ms < 3600000) return `${(ms / 60000).toFixed(2)}m`;
-  if (ms < 86400000) return `${(ms / 3600000).toFixed(2)}h`;
-  return `${(ms / 86400000).toFixed(2)}d`;
+  if (ms < 1000) return `${ms.toFixed(2)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`
+  if (ms < 3600000) return `${(ms / 60000).toFixed(2)}m`
+  if (ms < 86400000) return `${(ms / 3600000).toFixed(2)}h`
+  return `${(ms / 86400000).toFixed(2)}d`
 }
 
 export function formatTimings(report: TimingReport): string {
-  const nodes = report.metric === 'nodes';
-  const header = [...(report.byRun ? ['Run'] : []), 'd', 'Points', 'Parameters', 'Outcome', 'N', 'Min', 'Median', 'P90', 'P99', 'P99.9', 'Max', ...(nodes ? ['>1K', '>1M', '>1B'] : ['>1s', '>1m', '>1h', '>1d'])];
-  const rows: string[][] = [header];
+  const nodes = report.metric is 'nodes'
+  const header = [...(report.byRun ? ['Run'] : []), 'd', 'Points', 'Parameters', 'Outcome', 'N', 'Min', 'Median', 'P90', 'P99', 'P99.9', 'Max', ...(nodes ? ['>1K', '>1M', '>1B'] : ['>1s', '>1m', '>1h', '>1d'])]
+  const rows: string[][] = [header]
   const cells = (g: TimingDistribution | NodeDistribution): string[] => 'minNodes' in g
-    ? [String(g.count), ...[g.minNodes, g.medianNodes, g.p90Nodes, g.p99Nodes, g.p999Nodes, g.maxNodes].map(n => n.toLocaleString('en-US')), ...[g.overThousand, g.overMillion, g.overBillion].map(String)]
-    : [String(g.count), ...[g.minMs, g.medianMs, g.p90Ms, g.p99Ms, g.p999Ms, g.maxMs].map(duration), ...[g.overSecond, g.overMinute, g.overHour, g.overDay].map(String)];
+    ? [String(g.count), ...[g.minNodes, g.medianNodes, g.p90Nodes, g.p99Nodes, g.p999Nodes, g.maxNodes].map((n) => n.toLocaleString('en-US')), ...[g.overThousand, g.overMillion, g.overBillion].map(String)]
+    : [String(g.count), ...[g.minMs, g.medianMs, g.p90Ms, g.p99Ms, g.p999Ms, g.maxMs].map(duration), ...[g.overSecond, g.overMinute, g.overHour, g.overDay].map(String)]
   for (const group of report.groups) {
-    const p = group.parameters;
-    const parameters = (p.family === 'random' ? p.distribution : p.family) ?? '?';
-    const detail = (p.weight === undefined ? '' : ` weight=${p.weight}`) + (p.scales?.some(s => s !== 1) ? ` scales=${p.scales.join(',')}` : '');
-    rows.push([...(report.byRun ? [relative(report.directory, group.directory!) || '.'] : []), String(group.dimension ?? '?'), String(group.points ?? '?'), parameters + detail, group.outcome, ...cells(group)]);
+    const p = group.parameters
+    const parameters = (p.family is 'random' ? p.distribution : p.family) ?? '?'
+    const detail = (p.weight is undefined ? '' : ` weight=${p.weight}`) + (p.scales?.some((s) => s !== 1) ? ` scales=${p.scales.join(',')}` : '')
+    rows.push([...(report.byRun ? [relative(report.directory, group.directory!) or '.'] : []), String(group.dimension ?? '?'), String(group.points ?? '?'), parameters + detail, group.outcome, ...cells(group)])
   }
   if (report.groups.length) { rows.push(Array(header.length).fill('')); rows.push(header); }
-  for (const total of report.totals) rows.push([...(report.byRun ? ['TOTAL'] : []), report.byRun ? '-' : 'TOTAL', '-', '-', total.outcome, ...cells(total)]);
-  const widths = header.map((_, i) => Math.max(...rows.map(row => row[i].length)));
-  const lines = [`Search ${nodes ? 'nodes' : 'timings'}: ${report.directory}`, '', ...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()), '',
+  for (const total of report.totals) rows.push([...(report.byRun ? ['TOTAL'] : []), report.byRun ? '-' : 'TOTAL', '-', '-', total.outcome, ...cells(total)])
+  const widths = header.map((_, i) => Math.max(...rows.map((row) => row[i].length)))
+  const lines = [`Search ${nodes ? 'nodes' : 'timings'}: ${report.directory}`, '', ...rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()), '',
     nodes ? 'Nodes count visited tree-search states. Tail counts are cumulative and strictly greater than 1,000 / 1,000,000 / 1,000,000,000.' : 'Times exclude hull construction. Tail counts are cumulative and strictly greater than each threshold.',
     nodes ? 'Cutoffs are reported separately; their node counts measure partial searches.' : 'Cutoffs are reported separately; their recorded durations are lower bounds on time to finish.',
     'Percentiles use nearest rank; P99.9 is the 99.9th percentile and may equal the maximum in small groups.',
-    `${report.savedAttempts} saved attempts; ${nodes ? report.missingNodes : report.missingTimes} without valid ${nodes ? 'node count' : 'timing'}; ${report.unreadable} unreadable. Retries count separately.`];
-  if (!report.groups.length) lines.push(nodes ? 'No recorded search node counts.' : 'No recorded search timings.');
-  if (report.omittedTimeouts) lines.push(`${report.omittedTimeouts} timed-out attempts omitted; use --include-timeouts to show them.`);
-  if (report.warnings.length) lines.push('', ...report.warnings.map(w => `Warning: ${w}`));
-  return lines.join('\n') + '\n';
+    `${report.savedAttempts} saved attempts; ${nodes ? report.missingNodes : report.missingTimes} without valid ${nodes ? 'node count' : 'timing'}; ${report.unreadable} unreadable. Retries count separately.`]
+  if (not report.groups.length) lines.push(nodes ? 'No recorded search node counts.' : 'No recorded search timings.')
+  if (report.omittedTimeouts) lines.push(`${report.omittedTimeouts} timed-out attempts omitted; use --include-timeouts to show them.`)
+  if (report.warnings.length) lines.push('', ...report.warnings.map((w) => `Warning: ${w}`))
+  return lines.join('\n') + '\n'
 }

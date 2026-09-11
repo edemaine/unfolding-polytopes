@@ -1,5 +1,4 @@
-"civet esCompat";
-export * from './polytope.civet';
-export * from './unfold.civet';
-export * from './solver.civet';
-export * from './generators.civet';
+export * from './polytope.civet'
+export * from './unfold.civet'
+export * from './solver.civet'
+export * from './generators.civet'

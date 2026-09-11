@@ -1,188 +1,187 @@
-"civet esCompat";
-import {affineBasis, combinations, dot, mean, mul, norm, perpendicular, residual, sub, unit} from './linalg.civet';
-import {incrementalHull, HullPrecisionError} from './hull-incremental.civet';
-import type {Matrix, Vector} from './linalg.civet';
+import {affineBasis, combinations, dot, mean, mul, norm, perpendicular, residual, sub, unit} from './linalg.civet'
+import {incrementalHull, HullPrecisionError} from './hull-incremental.civet'
+import type {Matrix, Vector} from './linalg.civet'
 
 export interface Facet {
-  vertices: number[];
-  normal: Vector;
-  offset: number;
-  basis: Matrix;
-  ridges: number[];
+  vertices: number[]
+  normal: Vector
+  offset: number
+  basis: Matrix
+  ridges: number[]
 }
 
 export interface Ridge {
-  facets: [number, number];
-  vertices: number[];
-  basis: Matrix;
+  facets: [number, number]
+  vertices: number[]
+  basis: Matrix
   // Unit vectors pointing from this ridge into each incident facet.
-  inward: [Vector, Vector];
+  inward: [Vector, Vector]
 }
 
 export interface Polytope {
-  dimension: number;
+  dimension: number
   // Input point indices are retained, including redundant points.
-  points: Vector[];
-  originalPoints: Vector[];
-  center: Vector;
-  scale: number;
-  tolerance: number;
-  facets: Facet[];
-  ridges: Ridge[];
-  hullCombinations: number;
-  hullMethod: HullMethod;
-  hullFallback?: string;
+  points: Vector[]
+  originalPoints: Vector[]
+  center: Vector
+  scale: number
+  tolerance: number
+  facets: Facet[]
+  ridges: Ridge[]
+  hullCombinations: number
+  hullMethod: HullMethod
+  hullFallback?: string
 }
 
-export const hullMethods = ['enumerate', 'incremental'] as const;
-export type HullMethod = typeof hullMethods[number];
+export const hullMethods = ['enumerate', 'incremental'] as const
+export type HullMethod = typeof hullMethods[number]
 
 export interface HullOptions {
-  method?: HullMethod;
-  tolerance?: number;
-  maxCombinations?: number;
+  method?: HullMethod
+  tolerance?: number
+  maxCombinations?: number
 }
 
 export function convexHull(input: Vector[], options: HullOptions = {}): Polytope {
-  const method = options.method ?? 'incremental';
-  if (!hullMethods.includes(method)) throw new Error('Invalid hull method.');
-  const eps = options.tolerance ?? 1e-9;
-  const budget = options.maxCombinations ?? Infinity;
-  if (!(eps > 0 && eps < 0.01)) throw new Error('Tolerance must be between 0 and 0.01.');
-  if (!(budget >= 0) || (budget !== Infinity && !Number.isSafeInteger(budget))) throw new Error('Invalid hull combination budget.');
-  if (!Array.isArray(input) || !input.length || !Array.isArray(input[0])) throw new Error('Expected an array of coordinate arrays.');
-  const d = input[0].length;
-  if (d < 2 || input.length < d + 1) throw new Error('Need at least d+1 points in dimension d >= 2.');
-  if (input.some(p => !Array.isArray(p) || p.length !== d || !p.every(x => typeof x === 'number' && Number.isFinite(x)))) {
-    throw new Error('Coordinates must be finite numbers in a common dimension.');
+  const method = options.method ?? 'incremental'
+  if (not hullMethods.includes(method)) throw new Error('Invalid hull method.')
+  const eps = options.tolerance ?? 1e-9
+  const budget = options.maxCombinations ?? Infinity
+  if (not (eps > 0 and eps < 0.01)) throw new Error('Tolerance must be between 0 and 0.01.')
+  if (not (budget >= 0) or (budget !== Infinity and not Number.isSafeInteger(budget))) throw new Error('Invalid hull combination budget.')
+  if (not Array.isArray(input) or not input.length or not Array.isArray(input[0])) throw new Error('Expected an array of coordinate arrays.')
+  const d = input[0].length
+  if (d < 2 or input.length < d + 1) throw new Error('Need at least d+1 points in dimension d >= 2.')
+  if (input.some((p) => not Array.isArray(p) or p.length !== d or not p.every((x) => typeof x is 'number' and Number.isFinite(x)))) {
+    throw new Error('Coordinates must be finite numbers in a common dimension.')
   }
   const center = input[0].map((_, j) => {
-    const values = input.map(p => p[j]);
+    const values = input.map((p) => p[j]);
     return Math.min(...values) / 2 + Math.max(...values) / 2;
-  });
-  const scale = Math.max(...input.map(p => norm(sub(p, center))));
-  if (!(scale > 0 && Number.isFinite(scale))) throw new Error('Degenerate or out-of-range coordinates.');
-  const points = input.map(p => mul(sub(p, center), 1 / scale));
-  if (affineBasis(points, eps).length !== d) throw new Error('Input is not full dimensional at the chosen tolerance.');
+  })
+  const scale = Math.max(...input.map((p) => norm(sub(p, center))))
+  if (not (scale > 0 and Number.isFinite(scale))) throw new Error('Degenerate or out-of-range coordinates.')
+  const points = input.map((p) => mul(sub(p, center), 1 / scale))
+  if (affineBasis(points, eps).length !== d) throw new Error('Input is not full dimensional at the chosen tolerance.')
 
   // Construct candidate supporting hyperplanes through d independent points.
   // Deduplicate by ALL coplanar points: a cube has six facets, not twelve triangles.
-  const facets: Facet[] = [];
-  const seen = new Set<string>();
-  let hullCombinations = 0;
-  const consume = (): void => {
-    if (hullCombinations >= budget) throw new Error('Hull combination budget exceeded; no search performed.');
-    hullCombinations++;
-  };
+  const facets: Facet[] = []
+  const seen = new Set<string>()
+  let hullCombinations = 0
+  const consume = : void => {
+    if (hullCombinations >= budget) throw new Error('Hull combination budget exceeded; no search performed.')
+    hullCombinations++
+  }
   try {
-    const boundary = method === 'incremental' ? incrementalHull(points, eps, consume) : undefined;
-    const simplexFacetKeys: string[] = [];
-    const candidates = boundary ? boundary.faces : combinations(points.length, d);
+    const boundary = method is 'incremental' ? incrementalHull(points, eps, consume) : undefined
+    const simplexFacetKeys: string[] = []
+    const candidates = boundary ? boundary.faces : combinations(points.length, d)
     for (const candidate of candidates) {
-      consume();
-      const cached = Array.isArray(candidate) ? undefined : candidate;
-      const ids = Array.isArray(candidate) ? candidate : candidate.vertices;
-      let basis = cached?.basis ?? affineBasis(ids.map(i => points[i]), eps);
+      consume()
+      const cached = Array.isArray(candidate) ? undefined : candidate
+      const ids = Array.isArray(candidate) ? candidate : candidate.vertices
+      let basis = cached?.basis ?? affineBasis(ids.map((i) => points[i]), eps)
       if (basis.length !== d - 1) {
-        if (boundary) throw new HullPrecisionError('Degenerate final incremental simplex.');
+        if (boundary) throw new HullPrecisionError('Degenerate final incremental simplex.')
         continue;
       }
-      let normal = cached?.normal ?? perpendicular(basis, d, eps);
-      let offset = cached?.offset ?? dot(normal, points[ids[0]]);
-      let distances = points.map(p => dot(normal, p) - offset);
-      const positive = distances.some(x => x > eps);
-      const negative = distances.some(x => x < -eps);
-      if (positive && negative) {
-        if (method === 'incremental') throw new HullPrecisionError('Incremental facet is not supporting.');
-        continue;
+      let normal = cached?.normal ?? perpendicular(basis, d, eps)
+      let offset = cached?.offset ?? dot(normal, points[ids[0]])
+      let distances = points.map((p) => dot(normal, p) - offset)
+      const positive = distances.some((x) => x > eps)
+      const negative = distances.some((x) => x < -eps)
+      if (positive and negative) {
+        if (method is 'incremental') throw new HullPrecisionError('Incremental facet is not supporting.')
+        continue
       }
-      if (!positive && !negative) throw new HullPrecisionError('Ambiguous supporting plane at the chosen tolerance.');
+      if (not positive and not negative) throw new HullPrecisionError('Ambiguous supporting plane at the chosen tolerance.')
       if (positive) {
-        normal = mul(normal, -1); offset = -offset;
-        distances = distances.map(x => -x);
+        normal = mul(normal, -1); offset = -offset
+        distances = distances.map((x) => -x)
       }
-      const vertices = distances.flatMap((x, i) => Math.abs(x) <= eps ? [i] : []);
-      const key = vertices.join(',');
-      if (boundary) simplexFacetKeys.push(key);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const canonical = vertices.length === ids.length && vertices.every((v, i) => v === ids[i]);
-      const fullBasis = canonical ? basis : affineBasis(vertices.map(i => points[i]), eps);
+      const vertices = distances.flatMap((x, i) => Math.abs(x) <= eps ? [i] : [])
+      const key = vertices.join(',')
+      if (boundary) simplexFacetKeys.push(key)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const canonical = vertices.length is ids.length and vertices.every((v, i) => v is ids[i])
+      const fullBasis = canonical ? basis : affineBasis(vertices.map((i) => points[i]), eps)
       if (fullBasis.length !== d - 1) {
-        throw new HullPrecisionError('Inconsistent coplanarity; try a different tolerance.');
+        throw new HullPrecisionError('Inconsistent coplanarity; try a different tolerance.')
       }
-      if (boundary && !canonical) {
+      if (boundary and not canonical) {
         // Match the enumerator's lexicographic basis and orientation, so facet
         // IDs, ridge IDs, and subsequent tree-search order remain comparable.
-        basis = fullBasis;
-        normal = perpendicular(basis, d, eps);
-        offset = dot(normal, points[vertices[0]]);
-        if (points.some(p => dot(normal, p) - offset > eps)) { normal = mul(normal, -1); offset = -offset; }
-        const coplanar = points.flatMap((p, i) => Math.abs(dot(normal, p) - offset) <= eps ? [i] : []);
-        if (points.some(p => dot(normal, p) - offset > eps) || coplanar.join(',') !== key) throw new HullPrecisionError('Unstable incremental coplanarity.');
+        basis = fullBasis
+        normal = perpendicular(basis, d, eps)
+        offset = dot(normal, points[vertices[0]])
+        if (points.some((p) => dot(normal, p) - offset > eps)) { normal = mul(normal, -1); offset = -offset; }
+        const coplanar = points.flatMap((p, i) => Math.abs(dot(normal, p) - offset) <= eps ? [i] : [])
+        if (points.some((p) => dot(normal, p) - offset > eps) or coplanar.join(',') !== key) throw new HullPrecisionError('Unstable incremental coplanarity.')
       }
-      facets.push({vertices, normal, offset, basis, ridges: []});
+      facets.push({vertices, normal, offset, basis, ridges: []})
     }
-    facets.sort((a, b) => a.vertices.join(',') < b.vertices.join(',') ? -1 : 1);
-    if (facets.length < d + 1) throw new HullPrecisionError('Could not construct a closed full-dimensional hull.');
+    facets.sort((a, b) => a.vertices.join(',') < b.vertices.join(',') ? -1 : 1)
+    if (facets.length < d + 1) throw new HullPrecisionError('Could not construct a closed full-dimensional hull.')
 
-    const ridges: Ridge[] = [];
-    const ridgeKeys = new Set<string>();
+    const ridges: Ridge[] = []
+    const ridgeKeys = new Set<string>()
     function* adjacentFacets(): Generator<[number, number]> {
-      if (!boundary) {
+      if (not boundary) {
         for (let a = 0; a < facets.length; a++) {
-          for (let b = a + 1; b < facets.length; b++) yield [a, b];
+          for (let b = a + 1; b < facets.length; b++) yield [a, b]
         }
         return;
       }
-      const facetIds = new Map(facets.map((f, i) => [f.vertices.join(','), i]));
-      const pairs = new Map<string, [number, number]>();
+      const facetIds = new Map(facets.map((f, i) => [f.vertices.join(','), i]))
+      const pairs = new Map<string, [number, number]>()
       for (const [i, j] of boundary.adjacency) {
-        const a = facetIds.get(simplexFacetKeys[i]), b = facetIds.get(simplexFacetKeys[j]);
-        if (a === undefined || b === undefined) throw new HullPrecisionError('Missing incremental facet mapping.');
-        if (a === b) continue; // Triangulation boundary internal to one true facet.
-        const pair: [number, number] = a < b ? [a, b] : [b, a];
-        pairs.set(pair.join(','), pair);
+        const a = facetIds.get(simplexFacetKeys[i]), b = facetIds.get(simplexFacetKeys[j])
+        if (a is undefined or b is undefined) throw new HullPrecisionError('Missing incremental facet mapping.')
+        if (a is b) continue // Triangulation boundary internal to one true facet.
+        const pair: [number, number] = a < b ? [a, b] : [b, a]
+        pairs.set(pair.join(','), pair)
       }
       // Preserve the enumerator's ridge IDs and therefore tree-search order.
-      yield* [...pairs.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      yield* [...pairs.values()].sort((a, b) => a[0] - b[0] or a[1] - b[1])
     }
-    const centers = facets.map(f => mean(f.vertices.map(i => points[i])));
+    const centers = facets.map((f) => mean(f.vertices.map((i) => points[i])))
     for (const [a, b] of adjacentFacets()) {
-      const vertices = facets[a].vertices.filter(i => facets[b].vertices.includes(i));
+      const vertices = facets[a].vertices.filter((i) => facets[b].vertices.includes(i))
       if (vertices.length < d - 1) {
-        if (boundary) throw new HullPrecisionError('Incremental neighbors do not share a ridge.');
+        if (boundary) throw new HullPrecisionError('Incremental neighbors do not share a ridge.')
         continue;
       }
-      const basis = affineBasis(vertices.map(i => points[i]), eps);
+      const basis = affineBasis(vertices.map((i) => points[i]), eps)
       if (basis.length < d - 2) {
-        if (boundary) throw new HullPrecisionError('Degenerate incremental ridge.');
+        if (boundary) throw new HullPrecisionError('Degenerate incremental ridge.')
         continue;
       }
-      if (basis.length !== d - 2 || ridgeKeys.has(vertices.join(','))) {
-        throw new HullPrecisionError('Inconsistent ridge incidence; try a different tolerance.');
+      if (basis.length !== d - 2 or ridgeKeys.has(vertices.join(','))) {
+        throw new HullPrecisionError('Inconsistent ridge incidence; try a different tolerance.')
       }
-      ridgeKeys.add(vertices.join(','));
-      const inward = [a, b].map(f => unit(residual(sub(centers[f], points[vertices[0]]), basis), eps)) as [Vector, Vector];
-      const id = ridges.length;
-      ridges.push({facets: [a, b], vertices, basis, inward});
-      facets[a].ridges.push(id); facets[b].ridges.push(id);
+      ridgeKeys.add(vertices.join(','))
+      const inward = [a, b].map((f) => unit(residual(sub(centers[f], points[vertices[0]]), basis), eps)) as [Vector, Vector]
+      const id = ridges.length
+      ridges.push({facets: [a, b], vertices, basis, inward})
+      facets[a].ridges.push(id); facets[b].ridges.push(id)
     }
     for (const facet of facets) {
-      if (facet.ridges.length < d) throw new HullPrecisionError('Facet has too few ridges; hull is numerically inconsistent.');
+      if (facet.ridges.length < d) throw new HullPrecisionError('Facet has too few ridges; hull is numerically inconsistent.')
     }
-    const reached = new Set([0]);
-    const queue = [0];
+    const reached = new Set([0])
+    const queue = [0]
     for (let i = 0; i < queue.length; i++) {
       for (const r of facets[queue[i]].ridges) {
-        for (const f of ridges[r].facets) if (!reached.has(f)) { reached.add(f); queue.push(f); }
+        for (const f of ridges[r].facets) if (not reached.has(f)) { reached.add(f); queue.push(f); }
       }
     }
-    if (reached.size !== facets.length) throw new HullPrecisionError('Facet graph is disconnected; hull is numerically inconsistent.');
-    return {dimension: d, points, originalPoints: input.map(p => [...p]), center, scale, tolerance: eps, facets, ridges, hullCombinations, hullMethod: method};
+    if (reached.size !== facets.length) throw new HullPrecisionError('Facet graph is disconnected; hull is numerically inconsistent.')
+    return {dimension: d, points, originalPoints: input.map((p) => [...p]), center, scale, tolerance: eps, facets, ridges, hullCombinations, hullMethod: method}
   } catch (error) {
-    if (method !== 'incremental' || !(error instanceof HullPrecisionError)) throw error;
-    const result = convexHull(input, {...options, method: 'enumerate', maxCombinations: budget - hullCombinations});
-    return {...result, hullCombinations: result.hullCombinations + hullCombinations, hullFallback: error.message};
+    if (method !== 'incremental' or not (error instanceof HullPrecisionError)) throw error
+    const result = convexHull(input, {...options, method: 'enumerate', maxCombinations: budget - hullCombinations})
+    return {...result, hullCombinations: result.hullCombinations + hullCombinations, hullFallback: error.message}
   }
 }

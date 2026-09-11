@@ -1,146 +1,145 @@
-"civet esCompat";
-import {readFileSync, readdirSync} from 'node:fs';
-import {dirname, join, relative, resolve} from 'node:path';
-import {hostname} from 'node:os';
-import {retryCoverage} from './retry-coverage.civet';
-import type {CoverageRun, RetryCoverage} from './retry-coverage.civet';
+import {readFileSync, readdirSync} from 'node:fs'
+import {dirname, join, relative, resolve} from 'node:path'
+import {hostname} from 'node:os'
+import {retryCoverage} from './retry-coverage.civet'
+import type {CoverageRun, RetryCoverage} from './retry-coverage.civet'
 
 export interface Counts {
-  trials: number;
-  found: number;
-  candidates: number;
-  inconclusive: number;
-  errors: number;
-  unreadable: number;
-  timeouts: number;
-  nodeLimits: number;
-  searchMs: number;
+  trials: number
+  found: number
+  candidates: number
+  inconclusive: number
+  errors: number
+  unreadable: number
+  timeouts: number
+  nodeLimits: number
+  searchMs: number
 }
 
 export interface RunSummary extends Counts {
-  directory: string;
-  kind: string;
-  dimension: number | null;
-  points: number | null;
-  expected: number | null;
-  remaining: number | null;
-  finished: boolean;
-  state: 'finished' | 'running' | 'interrupted' | 'unknown';
-  pid: number | null;
-  retryCoverage: RetryCoverage;
+  directory: string
+  kind: string
+  dimension: number | null
+  points: number | null
+  expected: number | null
+  remaining: number | null
+  finished: boolean
+  state: 'finished' | 'running' | 'interrupted' | 'unknown'
+  pid: number | null
+  retryCoverage: RetryCoverage
 }
 
 export interface ResultsSummary {
-  directory: string;
-  runs: RunSummary[];
-  groups: GroupSummary[];
-  totals: Counts;
-  warnings: string[];
+  directory: string
+  runs: RunSummary[]
+  groups: GroupSummary[]
+  totals: Counts
+  warnings: string[]
 }
 
 export interface GroupSummary extends Counts {
-  dimension: number | null;
-  points: number | null;
-  runCount: number;
-  finishedRuns: number;
-  expected: number | null;
-  remaining: number | null;
+  dimension: number | null
+  points: number | null
+  runCount: number
+  finishedRuns: number
+  expected: number | null
+  remaining: number | null
 }
 
-const counts = (): Counts => ({trials: 0, found: 0, candidates: 0, inconclusive: 0, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 0, searchMs: 0});
-const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
-const compareParameter = (a: number | null, b: number | null): number => a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
+const counts = : Counts => ({trials: 0, found: 0, candidates: 0, inconclusive: 0, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 0, searchMs: 0})
+const nonnegative = (n: unknown): n is number => typeof n is 'number' and Number.isFinite(n) and n >= 0
+const compareParameter = (a: number | null, b: number | null): number => a is b ? 0 : a === null ? 1 : b === null ? -1 : a - b
 const statusKeys = new Map<string, 'found' | 'candidates' | 'inconclusive' | 'errors'>([
   ['found', 'found'], ['no-unfolding', 'candidates'], ['inconclusive', 'inconclusive'], ['error', 'errors']
-]);
+])
 
 function workerState(worker: any): 'running' | 'interrupted' | 'unknown' {
-  if (worker?.hostname !== hostname() || !Number.isSafeInteger(worker?.pid) || worker.pid <= 0) return 'unknown';
+  if (worker?.hostname !== hostname() or not Number.isSafeInteger(worker?.pid) or worker.pid <= 0) return 'unknown'
   try {
-    process.kill(worker.pid, 0); // Existence probe; does not terminate the worker.
-    return 'running';
+    process.kill(worker.pid, 0) // Existence probe; does not terminate the worker.
+    return 'running'
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'interrupted' : 'unknown';
+    return (error as NodeJS.ErrnoException).code is 'ESRCH' ? 'interrupted' : 'unknown'
   }
 }
 
 // Count saved attempts, including retries separately. Journals avoid parsing
 // large coordinate files, but only rows with an existing trial file count.
 export function summarizeResults(path = 'results', observeTrial?: (run: RunSummary, row: {file: string; sourceFile?: string; status: string; termination?: string; elapsedMs?: unknown; nodes?: unknown; generator?: any}, metadata: any) => void, collectCoverage?: (runs: CoverageRun[], links: [string, string][]) => void): ResultsSummary {
-  const directory = resolve(path);
-  const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()};
-  const coverageRuns: CoverageRun[] = [];
-  const retryLinks: [string, string][] = [];
-  type Parameters = {dimension: number | null; points: number | null};
-  const unknown: Parameters = {dimension: null, points: null};
-  const sourceParameters = new Map<string, Parameters>();
+  const directory = resolve(path)
+  const result: ResultsSummary = {directory, runs: [], groups: [], warnings: [], totals: counts()}
+  const coverageRuns: CoverageRun[] = []
+  const retryLinks: [string, string][] = []
+  type Parameters = {dimension: number | null; points: number | null}
+  const unknown: Parameters = {dimension: null, points: null}
+  const sourceParameters = new Map<string, Parameters>()
   function source(directory: string, visiting: Set<string>): Parameters {
-    const key = process.platform === 'win32' ? resolve(directory).toLowerCase() : resolve(directory);
-    if (visiting.has(key)) return unknown;
-    const cached = sourceParameters.get(key);
-    if (cached) return cached;
-    let value = unknown;
+    const key = process.platform is 'win32' ? resolve(directory).toLowerCase() : resolve(directory)
+    if (visiting.has(key)) return unknown
+    const cached = sourceParameters.get(key)
+    if (cached) return cached
+    let value = unknown
     try {
-      const metadata = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'));
-      value = parameters(metadata, new Set([...visiting, key]));
+      const metadata = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'))
+      value = parameters(metadata, new Set([...visiting, key]))
     } catch {}
-    sourceParameters.set(key, value);
-    return value;
+    sourceParameters.set(key, value)
+    return value
   }
   function parameters(metadata: any, visiting = new Set<string>()): Parameters {
     if (metadata?.generator) return {
       dimension: nonnegative(metadata.generator.dimension) ? metadata.generator.dimension : null,
       points: nonnegative(metadata.generator.count) ? metadata.generator.count : null
-    };
-    let values: Parameters[];
-    if (Array.isArray(metadata?.tasks) && metadata.tasks.length) {
+    }
+    let values: Parameters[]
+    if (Array.isArray(metadata?.tasks) and metadata.tasks.length) {
       values = metadata.tasks.map((task: any) => task?.generator ? parameters(task, visiting)
-        : typeof task?.sourceFile === 'string' ? source(dirname(task.sourceFile), visiting) : unknown);
+        : typeof task?.sourceFile is 'string' ? source(dirname(task.sourceFile), visiting) : unknown)
     } else {
-      const directories = Array.isArray(metadata?.sourceDirectories) && metadata.sourceDirectories.length ? metadata.sourceDirectories
-        : typeof metadata?.sourceDirectory === 'string' ? [metadata.sourceDirectory]
-        : Array.isArray(metadata?.sourceFiles) ? metadata.sourceFiles.filter((file: unknown) => typeof file === 'string').map((file: string) => dirname(file)) : [];
-      values = [...new Set<string>(directories.filter((value: unknown) => typeof value === 'string'))].map(path => source(path, visiting));
+      const directories = Array.isArray(metadata?.sourceDirectories) and metadata.sourceDirectories.length ? metadata.sourceDirectories
+        : typeof metadata?.sourceDirectory is 'string' ? [metadata.sourceDirectory]
+        : Array.isArray(metadata?.sourceFiles) ? metadata.sourceFiles.filter((file: unknown) => typeof file is 'string').map((file: string) => dirname(file)) : []
+      values = [...new Set<string>(directories.filter((value: unknown) => typeof value is 'string'))].map((path) => source(path, visiting))
     }
     // A retry can combine different parameters. Report only values shared by
     // every planned task/source, including tasks that have not run yet.
-    if (!values.length) return unknown;
-    const first = values[0];
-    return {dimension: values.every(v => v.dimension === first.dimension) ? first.dimension : null,
-      points: values.every(v => v.points === first.points) ? first.points : null};
+    if (not values.length) return unknown
+    const first = values[0]
+    return {dimension: values.every((v) => v.dimension is first.dimension) ? first.dimension : null,
+      points: values.every((v) => v.points is first.points) ? first.points : null}
   }
   function scan(current: string): void {
-    const entries = readdirSync(current, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1);
-    const files = new Set(entries.filter(e => e.isFile()).map(e => e.name));
-    const trials = [...files].filter(name => /^trial-.*\.json$/.test(name));
-    if (files.has('run.json') || trials.length) {
-      let metadata: any = {};
+    const entries = readdirSync(current, {withFileTypes: true}).sort((a, b) => a.name < b.name ? -1 : 1)
+    const files = new Set(entries.filter((e) => e.isFile()).map((e) => e.name))
+    const trials = [...files].filter((name) => /^trial-.*\.json$/.test(name))
+    if (files.has('run.json') or trials.length) {
+      let metadata: any = {}
       if (files.has('run.json')) {
         try { metadata = JSON.parse(readFileSync(join(current, 'run.json'), 'utf8')) ?? {}; } catch {
-          result.warnings.push(`Cannot parse ${join(current, 'run.json')}`);
+          result.warnings.push(`Cannot parse ${join(current, 'run.json')}`)
         }
       }
-      const expected = Number.isSafeInteger(metadata.trials) && metadata.trials >= 0 ? metadata.trials : null;
+      const expected = Number.isSafeInteger(metadata.trials) and metadata.trials >= 0 ? metadata.trials : null
       const run: RunSummary = {
         ...counts(), directory: current, kind: metadata.command ?? (metadata.sourceDirectory ? 'retry' : 'search'),
         ...parameters(metadata),
         expected, remaining: expected === null ? null : Math.max(0, expected - trials.length),
         finished: files.has('summary.json'),
         state: files.has('summary.json') ? 'finished' : workerState(metadata.worker),
-        pid: Number.isSafeInteger(metadata.worker?.pid) && metadata.worker.pid > 0 ? metadata.worker.pid : null,
+        pid: Number.isSafeInteger(metadata.worker?.pid) and metadata.worker.pid > 0 ? metadata.worker.pid : null,
         retryCoverage: {resolved: 0, remaining: expected, viaRetries: 0, complete: false, directories: [], inProgress: 0, duplicateAssignments: 0, unassigned: expected, workers: []}
-      };
+      }
       const coverageRun = {directory: current, expected, metadata, saved: new Set(trials), resolved: new Set<string>(), attempted: new Set<string>(), state: run.state, pid: run.pid};
       coverageRuns.push(coverageRun);
       const journal = new Map<string, any>();
       if (files.has('trials.jsonl')) {
         let invalid = 0;
         for (const line of readFileSync(join(current, 'trials.jsonl'), 'utf8').split('\n')) {
-          if (!line.trim()) continue;
+          if (not line.trim()) continue;
           try {
             const row = JSON.parse(line);
-            if (typeof row?.file !== 'string' || !/^trial-[^\\/]+\.json$/.test(row.file)) { invalid++; continue; }
-            if (!statusKeys.has(row.status)) { journal.delete(row.file); invalid++; continue; }
+            if (typeof row?.file !== 'string' or not /^trial-[^\\/]+\.json$/.test(row.file)) { invalid++; continue; }
+            if (not statusKeys.has(row.status)) { journal.delete(row.file); invalid++; continue; }
             // Repeated rows describe the same saved attempt; keep the last.
             journal.set(row.file, row);
           } catch { invalid++; }
@@ -150,7 +149,7 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
       for (const name of trials) {
         run.trials++;
         let row = journal.get(name);
-        if (!row) {
+        if (not row) {
           try {
             const saved = JSON.parse(readFileSync(join(current, name), 'utf8'));
             row = {file: name, sourceFile: saved?.sourceFile, generator: saved?.generator, status: saved?.error !== undefined ? 'error' : saved?.result?.status,
@@ -162,42 +161,42 @@ export function summarizeResults(path = 'results', observeTrial?: (run: RunSumma
           }
         }
         const key = statusKeys.get(row.status);
-        if (!key) {
+        if (not key) {
           run.unreadable++;
           result.warnings.push(`Unrecognized trial status in ${join(current, name)}`);
           continue;
         }
         run[key]++;
         coverageRun.attempted.add(name);
-        if (row.status === 'found' || row.status === 'no-unfolding') coverageRun.resolved.add(name);
-        if (typeof row.sourceFile === 'string') retryLinks.push([join(current, name), row.sourceFile]);
+        if (row.status is 'found' or row.status is 'no-unfolding') coverageRun.resolved.add(name);
+        if (typeof row.sourceFile is 'string') retryLinks.push([join(current, name), row.sourceFile]);
         observeTrial?.(run, row, metadata);
-        if (row.status === 'inconclusive' && row.termination === 'timeout') run.timeouts++;
-        if (row.status === 'inconclusive' && row.termination === 'maxNodes') run.nodeLimits++;
+        if (row.status is 'inconclusive' and row.termination is 'timeout') run.timeouts++;
+        if (row.status is 'inconclusive' and row.termination is 'maxNodes') run.nodeLimits++;
         if (nonnegative(row.elapsedMs)) run.searchMs += row.elapsedMs;
       }
       result.runs.push(run);
       for (const key of Object.keys(result.totals) as (keyof Counts)[]) result.totals[key] += run[key];
     }
     // Do not follow symlinks/junctions: avoid cycles and double counting.
-    for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) scan(join(current, entry.name));
+    for (const entry of entries) if (entry.isDirectory() and not entry.isSymbolicLink()) scan(join(current, entry.name));
   }
   scan(directory);
   collectCoverage?.(coverageRuns, retryLinks);
   const coverage = retryCoverage(coverageRuns, retryLinks);
   for (const run of result.runs) run.retryCoverage = coverage.runs.get(run.directory)!;
-  result.runs.sort((a, b) => compareParameter(a.dimension, b.dimension) || compareParameter(a.points, b.points)
-    || (a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0));
+  result.runs.sort((a, b) => compareParameter(a.dimension, b.dimension) or compareParameter(a.points, b.points)
+    or (a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0));
   for (const run of result.runs) {
     let group = result.groups.at(-1);
-    if (!group || group.dimension !== run.dimension || group.points !== run.points) {
+    if (not group or group.dimension !== run.dimension or group.points !== run.points) {
       group = {...counts(), dimension: run.dimension, points: run.points, runCount: 0, finishedRuns: 0, expected: 0, remaining: 0};
       result.groups.push(group);
     }
     group.runCount++;
     if (run.finished) group.finishedRuns++;
-    group.expected = group.expected === null || run.expected === null ? null : group.expected + run.expected;
-    group.remaining = group.remaining === null || run.remaining === null ? null : group.remaining + run.remaining;
+    group.expected = group.expected === null or run.expected === null ? null : group.expected + run.expected;
+    group.remaining = group.remaining === null or run.remaining === null ? null : group.remaining + run.remaining;
     for (const key of Object.keys(result.totals) as (keyof Counts)[]) group[key] += run[key];
   }
   return result;
@@ -223,15 +222,15 @@ export function formatSummary(summary: ResultsSummary): string {
   const row = (label: string, kind: string, dimension: number | null, points: number | null, c: Counts, expected: number | null, state: string, coverage = '-'): string[] => [
     label, kind, String(dimension ?? '-'), String(points ?? '-'), `${c.trials}/${expected ?? '?'}`,
     String(c.found), String(c.candidates), String(c.inconclusive), String(c.errors), String(c.unreadable), state, coverage
-  ];
+  ]
   let offset = 0;
   for (const group of summary.groups) {
     for (const run of summary.runs.slice(offset, offset + group.runCount)) {
-      const state = run.state === 'running' ? `running (PID ${run.pid})` : run.state;
+      const state = run.state is 'running' ? `running (PID ${run.pid})` : run.state;
       const c = run.retryCoverage;
-      const pending = c.inProgress ? `${c.unassigned === 0 ? '' : `${c.unassigned ?? '?'} left, `}${c.inProgress} running` : `${c.remaining ?? '?'} left`;
-      const coverage = c.viaRetries || c.inProgress ? `${c.complete ? 'complete' : 'partial'} (${c.viaRetries ? `+${c.viaRetries}; ` : ''}${pending})` : '-';
-      rows.push(row(relative(summary.directory, run.directory) || '.', run.kind, run.dimension, run.points, run, run.expected, state, coverage));
+      const pending = c.inProgress ? `${c.unassigned is 0 ? '' : `${c.unassigned ?? '?'} left, `}${c.inProgress} running` : `${c.remaining ?? '?'} left`;
+      const coverage = c.viaRetries or c.inProgress ? `${c.complete ? 'complete' : 'partial'} (${c.viaRetries ? `+${c.viaRetries}; ` : ''}${pending})` : '-';
+      rows.push(row(relative(summary.directory, run.directory) or '.', run.kind, run.dimension, run.points, run, run.expected, state, coverage));
     }
     offset += group.runCount;
     if (group.runCount > 1) {
@@ -239,12 +238,12 @@ export function formatSummary(summary: ResultsSummary): string {
     }
     rows.push(Array(rows[0].length).fill(''));
   }
-  const expected = summary.runs.some(r => r.expected === null) ? null : summary.runs.reduce((n, r) => n + r.expected!, 0);
+  const expected = summary.runs.some((r) => r.expected === null) ? null : summary.runs.reduce((n, r) => n + r.expected!, 0);
   if (summary.runs.length) rows.push([...rows[0]]);
-  rows.push(row('TOTAL', '-', null, null, t, expected, `${summary.runs.filter(r => r.finished).length}/${summary.runs.length} finished`));
-  const widths = rows[0].map((_, i) => Math.max(...rows.map(row => row[i].length)));
-  lines.push(...rows.map(row => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));
-  if (summary.warnings.length) lines.push('', ...summary.warnings.map(w => `Warning: ${w}`));
+  rows.push(row('TOTAL', '-', null, null, t, expected, `${summary.runs.filter((r) => r.finished).length}/${summary.runs.length} finished`));
+  const widths = rows[0].map((_, i) => Math.max(...rows.map((row) => row[i].length)));
+  lines.push(...rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd()));
+  if (summary.warnings.length) lines.push('', ...summary.warnings.map((w) => `Warning: ${w}`));
   lines.push('', `${summary.runs.length} runs; ${t.trials} saved attempts (retries counted separately).`,
     'Retry coverage: found/candidate results in other scanned runs resolve source trials; +N counts additional resolved trials. Worker state and original counts are unchanged.',
     `Inconclusive limits: ${t.timeouts} timeout, ${t.nodeLimits} node limit. Recorded search time: ${elapsedTime(t.searchMs)}.`);

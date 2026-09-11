@@ -1,11 +1,10 @@
-"civet esCompat";
-import {closeSync, existsSync, fsyncSync, lstatSync, openSync, readSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
-import {randomUUID} from 'node:crypto';
-import {trialStatuses} from './jobs.civet';
-import {trialJSON} from './storage.civet';
+import {closeSync, existsSync, fsyncSync, lstatSync, openSync, readSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync} from 'node:fs'
+import {join} from 'node:path'
+import {randomUUID} from 'node:crypto'
+import {trialStatuses} from './jobs.civet'
+import {trialJSON} from './storage.civet'
 
-export function compactResults(paths: string[], dryRun = false, progress: (row: object) => void = () => {}) {
+export function compactResults(paths: string[], dryRun = false, progress: (row: object) => void = => {;}) {
   const totals = {examined: 0, compacted: 0, wouldCompact: 0, alreadyConcise: 0, candidates: 0, pending: 0, invalid: 0, changedDuringRead: 0, errors: 0, savedBytes: 0};
   const seen = new Set<string>();
   const warnings: string[] = [];
@@ -16,7 +15,7 @@ export function compactResults(paths: string[], dryRun = false, progress: (row: 
   let lastProgress = Date.now();
   function scan(directory: string): void {
     directory = realpathSync(directory);
-    const key = process.platform === 'win32' ? directory.toLowerCase() : directory;
+    const key = process.platform is 'win32' ? directory.toLowerCase() : directory;
     if (seen.has(key)) return;
     seen.add(key);
     const entries = readdirSync(directory, {withFileTypes: true});
@@ -28,14 +27,14 @@ export function compactResults(paths: string[], dryRun = false, progress: (row: 
       if (Date.now() - lastProgress >= 5000) {
         progress({directory, dryRun, ...totals}); lastProgress = Date.now();
       }
-      if (!entry.isFile() || !/^trial-.*\.json$/.test(entry.name)) continue;
+      if (not entry.isFile() or not /^trial-.*\.json$/.test(entry.name)) continue;
       totals.examined++;
-      if (!finished && !statuses.has(entry.name)) { totals.pending++; continue; }
+      if (not finished and not statuses.has(entry.name)) { totals.pending++; continue; }
       const file = join(directory, entry.name);
       let temporary: string | undefined;
       try {
         const before = lstatSync(file);
-        if (!before.isFile()) continue;
+        if (not before.isFile()) continue;
         // Our concise marker is first, so repeat passes need only a tiny read.
         const fd = openSync(file, 'r');
         const prefix = Buffer.alloc(32);
@@ -47,9 +46,9 @@ export function compactResults(paths: string[], dryRun = false, progress: (row: 
         const original = readFileSync(file, 'utf8');
         let record: any;
         try { record = JSON.parse(original); } catch { totals.invalid++; continue; }
-        if (record?.result?.status === 'no-unfolding') { totals.candidates++; continue; }
-        if (record?.formatVersion !== 1 || !Array.isArray(record.points) ||
-            !(['found', 'inconclusive'].includes(record.result?.status) || typeof record.error === 'string')) {
+        if (record?.result?.status is 'no-unfolding') { totals.candidates++; continue; }
+        if (record?.formatVersion !== 1 or not Array.isArray(record.points) or
+            not (['found', 'inconclusive'].includes(record.result?.status) or typeof record.error is 'string')) {
           totals.invalid++; continue;
         }
         const text = trialJSON(record);
@@ -60,7 +59,7 @@ export function compactResults(paths: string[], dryRun = false, progress: (row: 
         const out = openSync(temporary, 'wx', before.mode);
         try { writeFileSync(out, text); fsyncSync(out); } finally { closeSync(out); }
         const after = lstatSync(file);
-        if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+        if (before.ino !== after.ino or before.size !== after.size or before.mtimeMs !== after.mtimeMs or before.ctimeMs !== after.ctimeMs) {
           totals.changedDuringRead++; continue;
         }
         // Same-directory rename replaces the complete file atomically. Never
@@ -71,12 +70,12 @@ export function compactResults(paths: string[], dryRun = false, progress: (row: 
         if (temporary) { try { unlinkSync(temporary); } catch (error) { warn(temporary, error); } }
       }
     }
-    for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.')) {
+    for (const entry of entries) if (entry.isDirectory() and not entry.isSymbolicLink() and not entry.name.startsWith('.')) {
       try { scan(join(directory, entry.name)); } catch (error) { warn(join(directory, entry.name), error); }
     }
     progress({directory, dryRun, ...totals});
   }
-  const directories = paths.map(path => realpathSync(path));
+  const directories = paths.map((path) => realpathSync(path));
   for (const directory of directories) scan(directory);
   return {directories, dryRun, ...totals, warnings};
 }

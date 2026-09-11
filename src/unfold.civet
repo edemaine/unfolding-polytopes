@@ -1,60 +1,59 @@
-"civet esCompat";
-import {add, apply, combinations, dot, mean, mul, solveLinear, sub, unit} from './linalg.civet';
-import type {Matrix, Vector} from './linalg.civet';
-import {primalWitness, gjkSeparated, supportSeparates, halfspaceLP} from './primal.civet';
-import type {Polytope} from './polytope.civet';
+import {add, apply, combinations, dot, mean, mul, solveLinear, sub, unit} from './linalg.civet'
+import type {Matrix, Vector} from './linalg.civet'
+import {primalWitness, gjkSeparated, supportSeparates, halfspaceLP} from './primal.civet'
+import type {Polytope} from './polytope.civet'
 
 export interface Halfspace { normal: Vector; offset: number; }
 export interface Placement {
-  facet: number;
-  linear: Matrix;
-  translation: Vector;
-  vertices: number[];
-  coordinates: Vector[];
-  halfspaces: Halfspace[];
-  min: Vector;
-  max: Vector;
+  facet: number
+  linear: Matrix
+  translation: Vector
+  vertices: number[]
+  coordinates: Vector[]
+  halfspaces: Halfspace[]
+  min: Vector
+  max: Vector
 }
 
-export const mapPoint = (placement: Placement, point: Vector): Vector => add(apply(placement.linear, point), placement.translation);
+export const mapPoint = (placement: Placement, point: Vector): Vector => add(apply(placement.linear, point), placement.translation)
 
 function placement(poly: Polytope, facet: number, linear: Matrix, translation: Vector): Placement {
-  const face = poly.facets[facet];
-  const coordinates = face.vertices.map(i => add(apply(linear, poly.points[i]), translation));
-  const halfspaces = face.ridges.map(id => {
+  const face = poly.facets[facet]
+  const coordinates = face.vertices.map((i) => add(apply(linear, poly.points[i]), translation))
+  const halfspaces = face.ridges.map((id) => {
     const ridge = poly.ridges[id];
-    const side = ridge.facets[0] === facet ? 0 : 1;
+    const side = ridge.facets[0] is facet ? 0 : 1;
     const normal = unit(mul(apply(linear, ridge.inward[side]), -1), poly.tolerance);
     const offset = dot(normal, add(apply(linear, poly.points[ridge.vertices[0]]), translation));
     return {normal, offset};
-  });
-  const min = coordinates[0].map((_, j) => Math.min(...coordinates.map(p => p[j])));
-  const max = coordinates[0].map((_, j) => Math.max(...coordinates.map(p => p[j])));
-  return {facet, linear, translation, vertices: [...face.vertices], coordinates, halfspaces, min, max};
+  })
+  const min = coordinates[0].map((_, j) => Math.min(...coordinates.map((p) => p[j])))
+  const max = coordinates[0].map((_, j) => Math.max(...coordinates.map((p) => p[j])))
+  return {facet, linear, translation, vertices: [...face.vertices], coordinates, halfspaces, min, max}
 }
 
 export function rootPlacement(poly: Polytope, root = 0): Placement {
-  if (!Number.isInteger(root) || root < 0 || root >= poly.facets.length) throw new Error('Invalid root facet.');
-  const linear = poly.facets[root].basis;
-  return placement(poly, root, linear, mul(apply(linear, poly.points[poly.facets[root].vertices[0]]), -1));
+  if (not Number.isInteger(root) or root < 0 or root >= poly.facets.length) throw new Error('Invalid root facet.')
+  const linear = poly.facets[root].basis
+  return placement(poly, root, linear, mul(apply(linear, poly.points[poly.facets[root].vertices[0]]), -1))
 }
 
 export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number): Placement {
-  const ridge = poly.ridges[ridgeId];
-  if (!ridge || !ridge.facets.includes(parent.facet)) throw new Error('Ridge is not incident to parent facet.');
-  const side = ridge.facets[0] === parent.facet ? 0 : 1;
-  const child = ridge.facets[1 - side];
-  const along = ridge.basis.map(v => apply(parent.linear, v));
-  const across = apply(parent.linear, ridge.inward[side]);
+  const ridge = poly.ridges[ridgeId]
+  if (not ridge or not ridge.facets.includes(parent.facet)) throw new Error('Ridge is not incident to parent facet.')
+  const side = ridge.facets[0] is parent.facet ? 0 : 1
+  const child = ridge.facets[1 - side]
+  const along = ridge.basis.map((v) => apply(parent.linear, v))
+  const across = apply(parent.linear, ridge.inward[side])
   // Fix the ridge pointwise and send the child's inward direction to the
   // negative of the parent's inward direction. This unfolds the hinge flat.
   const linear = Array.from({length: poly.dimension - 1}, (_, i) => (
     Array.from({length: poly.dimension}, (_, j) => (
       ridge.basis.reduce((sum, v, k) => sum + along[k][i] * v[j], 0)
-      - across[i] * ridge.inward[1 - side][j]))));
-  const anchor = poly.points[ridge.vertices[0]];
-  const translation = sub(mapPoint(parent, anchor), apply(linear, anchor));
-  return placement(poly, child, linear, translation);
+      - across[i] * ridge.inward[1 - side][j]))))
+  const anchor = poly.points[ridge.vertices[0]]
+  const translation = sub(mapPoint(parent, anchor), apply(linear, anchor))
+  return placement(poly, child, linear, translation)
 }
 
 // Is there x strictly inside both convex facets? Maximize t subject to
@@ -63,70 +62,82 @@ export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number):
 // ensure an optimal vertex in (x,t); enumerate its k+1 active constraints.
 // This works in any dimension, including configurations where no vertex of
 // either facet lies in the other. Boundary contact is allowed.
-export const overlapMethods = ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'] as const;
-export type OverlapMethod = typeof overlapMethods[number];
+export const overlapMethods = ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'] as const
+export type OverlapMethod = typeof overlapMethods[number]
 export interface OverlapStats { calls: number; primalWitnesses: number; supportSeparations: number; fallbacks: number; }
 
-export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: () => void = () => {}, method: OverlapMethod = 'dual-lp', stats?: OverlapStats): boolean {
-  if (stats) stats.calls++;
-  if (!overlapMethods.includes(method)) throw new Error('Unknown overlap method.');
-  const k = a.min.length;
-  if (b.min.length !== k) throw new Error('Cannot intersect different dimensions.');
+export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: () => void = => {;}, method: OverlapMethod = 'dual-lp', stats?: OverlapStats): boolean {
+  if (stats) stats.calls++
+  if (not overlapMethods.includes(method)) throw new Error('Unknown overlap method.')
+  const k = a.min.length
+  if (b.min.length !== k) throw new Error('Cannot intersect different dimensions.')
   for (let i = 0; i < k; i++) {
-    if (Math.min(a.max[i], b.max[i]) - Math.max(a.min[i], b.min[i]) <= tolerance) return false;
+    if (Math.min(a.max[i], b.max[i]) - Math.max(a.min[i], b.min[i]) <= tolerance) return false
   }
-  const planes = [...a.halfspaces, ...b.halfspaces];
-  const inside = (x: Vector): boolean => planes.every(p => p.offset - dot(p.normal, x) > tolerance);
-  if (inside(mean(a.coordinates)) || inside(mean(b.coordinates))) return true;
+  const planes = [...a.halfspaces, ...b.halfspaces]
+  const inside = (x: Vector): boolean => planes.every((p) => p.offset - dot(p.normal, x) > tolerance)
+  if (inside(mean(a.coordinates)) or inside(mean(b.coordinates))) return true
   if (method.startsWith('dual-')) {
-    const result = halfspaceLP(a, b, tolerance, poll);
-    if (result && inside(result.point)) { if (stats) stats.primalWitnesses++; return true; }
-    if (result?.separated) { if (stats) stats.supportSeparations++; return false; }
-    if (stats) stats.fallbacks++;
+    const result = halfspaceLP(a, b, tolerance, poll)
+    if (result and inside(result.point)) {
+      if (stats) stats.primalWitnesses++
+      return true
+    }
+    if (result?.separated) {
+      if (stats) stats.supportSeparations++
+      return false
+    }
+    if (stats) stats.fallbacks++
   } else if (method !== 'enumerate') {
-    if (method.startsWith('gjk-') && gjkSeparated(a, b, tolerance, poll)) {
-      if (stats) stats.supportSeparations++; return false;
+    if (method.startsWith('gjk-') and gjkSeparated(a, b, tolerance, poll)) {
+      if (stats) stats.supportSeparations++
+      return false
     }
-    const witness = primalWitness(a, b, poll);
-    if (witness?.point && inside(witness.point)) { if (stats) stats.primalWitnesses++; return true; }
-    if (witness && supportSeparates(a, b, witness.direction, tolerance)) {
-      if (stats) stats.supportSeparations++; return false;
+    const witness = primalWitness(a, b, poll)
+    if (witness?.point and inside(witness.point)) {
+      if (stats) stats.primalWitnesses++
+      return true
     }
-    if (method.startsWith('primal-') && gjkSeparated(a, b, tolerance, poll)) {
-      if (stats) stats.supportSeparations++; return false;
+    if (witness and supportSeparates(a, b, witness.direction, tolerance)) {
+      if (stats) stats.supportSeparations++
+      return false
+    }
+    if (method.startsWith('primal-') and gjkSeparated(a, b, tolerance, poll)) {
+      if (stats) stats.supportSeparations++
+      return false
     }
     // Barycentric and geometric margins differ. Retain the original geometric
     // decision for shallow overlaps, failed pivots, or GJK stagnation.
-    if (stats) stats.fallbacks++;
+    if (stats) stats.fallbacks++
   }
-  let iterations = 0;
+  let iterations = 0
   for (const ids of combinations(planes.length, k + 1)) {
-    if ((iterations++ % 256) === 0) poll();
-    const solution = solveLinear(ids.map(i => [...planes[i].normal, 1]), ids.map(i => planes[i].offset), 1e-13);
+    if ((iterations++ % 256) is 0) poll()
+    const solution = solveLinear(ids.map((i) => [...planes[i].normal, 1]), ids.map((i) => planes[i].offset), 1e-13)
     // Re-evaluate all actual inequalities instead of trusting the computed t.
-    if (solution && inside(solution.slice(0, k))) return true;
+    if (solution and inside(solution.slice(0, k))) return true
   }
-  return false;
+  return false
 }
 
 export function developTree(poly: Polytope, tree: number[], root = 0): Placement[] {
-  if (tree.length !== poly.facets.length - 1 || new Set(tree).size !== tree.length || tree.some(id => !Number.isInteger(id) || !poly.ridges[id])) {
-    throw new Error('Expected distinct ridge IDs forming a spanning tree.');
+  if (tree.length !== poly.facets.length - 1 or new Set(tree).size !== tree.length or tree.some((id) => not Number.isInteger(id) or not poly.ridges[id])) {
+    throw new Error('Expected distinct ridge IDs forming a spanning tree.')
   }
-  const placements = new Map<number, Placement>([[root, rootPlacement(poly, root)]]);
-  const queue = [root];
+  const placements = new Map<number, Placement>([[root, rootPlacement(poly, root)]])
+  const queue = [root]
   for (let i = 0; i < queue.length; i++) {
-    const f = queue[i];
+    const f = queue[i]
     for (const id of tree) {
-      const ridge = poly.ridges[id];
-      if (!ridge.facets.includes(f)) continue;
-      const child = ridge.facets[0] === f ? ridge.facets[1] : ridge.facets[0];
-      if (!placements.has(child)) {
-        placements.set(child, attachFacet(poly, placements.get(f)!, id));
-        queue.push(child);
+      const ridge = poly.ridges[id]
+      if (not ridge.facets.includes(f)) continue
+      const child = ridge.facets[0] is f ? ridge.facets[1] : ridge.facets[0]
+      if (not placements.has(child)) {
+        placements.set(child, attachFacet(poly, placements.get(f)!, id))
+        queue.push(child)
       }
     }
   }
-  if (placements.size !== poly.facets.length) throw new Error('Ridge IDs do not form a spanning tree.');
-  return [...placements.values()].sort((a, b) => a.facet - b.facet);
+  if (placements.size !== poly.facets.length) throw new Error('Ridge IDs do not form a spanning tree.')
+  return [...placements.values()].sort((a, b) => a.facet - b.facet)
 }

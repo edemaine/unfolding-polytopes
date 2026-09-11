@@ -1,79 +1,78 @@
-"civet esCompat";
-import {existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync} from 'node:fs';
-import {basename, join} from 'node:path';
-import {randomPoints} from './generators.civet';
-import type {Distribution} from './generators.civet';
-import type {HullOptions} from './polytope.civet';
-import type {SolveOptions} from './solver.civet';
-import type {Vector} from './linalg.civet';
+import {existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync} from 'node:fs'
+import {basename, join} from 'node:path'
+import {randomPoints} from './generators.civet'
+import type {Distribution} from './generators.civet'
+import type {HullOptions} from './polytope.civet'
+import type {SolveOptions} from './solver.civet'
+import type {Vector} from './linalg.civet'
 
 export interface GeneratorSpec {
-  family: string;
-  dimension: number;
-  count: number;
-  seed: number;
-  distribution?: Distribution;
-  scales?: number[];
-  weight?: number;
+  family: string
+  dimension: number
+  count: number
+  seed: number
+  distribution?: Distribution
+  scales?: number[]
+  weight?: number
 }
 
 export interface TrialTask {
-  name: string;
-  sourceFile?: string;
-  seed?: number;
-  generator?: GeneratorSpec;
-  input?: {points: Vector[]; generator?: GeneratorSpec};
-  hullOptions: HullOptions;
-  solveOptions: SolveOptions;
+  name: string
+  sourceFile?: string
+  seed?: number
+  generator?: GeneratorSpec
+  input?: {points: Vector[]; generator?: GeneratorSpec}
+  hullOptions: HullOptions
+  solveOptions: SolveOptions
 }
 
-export const trialName = (index: number, seed: number): string => `trial-${String(index).padStart(6, '0')}-seed-${seed}.json`;
+export const trialName = (index: number, seed: number): string => `trial-${String(index).padStart(6, '0')}-seed-${seed}.json`
 
 export function trialStatuses(directory: string): {statuses: Map<string, string>; invalidRows: number} {
-  const statuses = new Map<string, string>();
-  let invalidRows = 0;
-  const path = join(directory, 'trials.jsonl');
-  if (!existsSync(path)) return {statuses, invalidRows};
+  const statuses = new Map<string, string>()
+  let invalidRows = 0
+  const path = join(directory, 'trials.jsonl')
+  if (not existsSync(path)) return {statuses, invalidRows}
   for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
+    if (not line.trim()) continue
     try {
-      const row = JSON.parse(line);
-      if (typeof row?.file !== 'string' || !/^trial-[^\\/]+\.json$/.test(row.file)) { invalidRows++; continue; }
-      if (!['found', 'no-unfolding', 'inconclusive', 'error'].includes(row.status)) {
-        statuses.delete(row.file); invalidRows++; continue;
+      const row = JSON.parse(line)
+      if (typeof row?.file !== 'string' or not /^trial-[^\\/]+\.json$/.test(row.file)) { invalidRows++; continue; }
+      if (not ['found', 'no-unfolding', 'inconclusive', 'error'].includes(row.status)) {
+        statuses.delete(row.file); invalidRows++; continue
       }
-      statuses.set(row.file, row.status);
+      statuses.set(row.file, row.status)
     } catch { invalidRows++; }
   }
-  return {statuses, invalidRows};
+  return {statuses, invalidRows}
 }
 
 export function generatedInput(generator: GeneratorSpec): {points: Vector[]; generator: GeneratorSpec} {
-  if (generator.family !== 'random') throw new Error('Missing trial requires a saved random generator.');
-  const scales = generator.scales ?? Array(generator.dimension).fill(1);
-  if (scales.length !== generator.dimension || scales.some(x => !(x > 0 && Number.isFinite(x)))) throw new Error('Invalid saved generator scales.');
-  return {points: randomPoints(generator.dimension, generator.count, generator.seed, generator.distribution ?? 'sphere').map(p => p.map((x, j) => x * scales[j])), generator};
+  if (generator.family !== 'random') throw new Error('Missing trial requires a saved random generator.')
+  const scales = generator.scales ?? Array(generator.dimension).fill(1)
+  if (scales.length !== generator.dimension or scales.some((x) => not (x > 0 and Number.isFinite(x)))) throw new Error('Invalid saved generator scales.')
+  return {points: randomPoints(generator.dimension, generator.count, generator.seed, generator.distribution ?? 'sphere').map((p) => p.map((x, j) => x * scales[j])), generator}
 }
 
 // Describe unexecuted tasks without allocating their point sets. New retries
 // persist these descriptors, so an interrupted retry is itself resumable.
-export function missingTasks(directory: string, files: Set<string>, include: (name: string) => boolean = () => true): TrialTask[] {
-  if (!existsSync(join(directory, 'run.json'))) return [];
-  const run = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'));
+export function missingTasks(directory: string, files: Set<string>, include: (name: string) => boolean = => true): TrialTask[] {
+  if (not existsSync(join(directory, 'run.json'))) return []
+  const run = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'))
   if (Array.isArray(run.tasks)) {
-    const names = new Set<string>();
+    const names = new Set<string>()
     for (const task of run.tasks) {
-      if (typeof task.name !== 'string' || !/^trial-[^\\/]+\.json$/.test(task.name) || names.has(task.name)) throw new Error(`Invalid task names in ${join(directory, 'run.json')}`);
-      names.add(task.name);
+      if (typeof task.name !== 'string' or not /^trial-[^\\/]+\.json$/.test(task.name) or names.has(task.name)) throw new Error(`Invalid task names in ${join(directory, 'run.json')}`)
+      names.add(task.name)
     }
-    return run.tasks.filter((t: TrialTask) => !files.has(t.name) && include(t.name));
+    return run.tasks.filter((t: TrialTask) => not files.has(t.name) and include(t.name))
   }
-  if (Array.isArray(run.sourceFiles)) {
+  if (Array.isArray(run.sourceFiles))
     // Compatibility with retry runs written before task manifests existed.
-    const multiple = (run.sourceDirectories?.length ?? 1) > 1;
+    const multiple = (run.sourceDirectories?.length ?? 1) > 1
     return run.sourceFiles.flatMap((sourceFile: string, i: number) => {
       const name = multiple ? `trial-${String(i).padStart(6, '0')}.json` : basename(sourceFile);
-      if (files.has(name) || !include(name)) return [];
+      if (files.has(name) or not include(name)) return [];
       const saved = JSON.parse(readFileSync(sourceFile, 'utf8'));
       const old = run.overrides ?? {};
       const hullOptions = {...saved.hullOptions};
@@ -84,78 +83,77 @@ export function missingTasks(directory: string, files: Set<string>, include: (na
       if (old.all) solveOptions.stopAfterFirst = false;
       if (old['no-prune']) solveOptions.pruneOverlaps = false;
       return [{name, sourceFile, generator: saved.generator, seed: saved.generator?.seed, hullOptions, solveOptions}];
-    });
-  }
-  if (run.generator?.family !== 'random') return [];
-  if (!Number.isSafeInteger(run.seed) || !Number.isSafeInteger(run.trials) || run.trials < 0 || !Number.isSafeInteger(run.seed + run.trials - 1)) throw new Error(`Invalid seed range in ${join(directory, 'run.json')}`);
-  const tasks: TrialTask[] = [];
+    })
+  if (run.generator?.family !== 'random') return []
+  if (not Number.isSafeInteger(run.seed) or not Number.isSafeInteger(run.trials) or run.trials < 0 or not Number.isSafeInteger(run.seed + run.trials - 1)) throw new Error(`Invalid seed range in ${join(directory, 'run.json')}`)
+  const tasks: TrialTask[] = []
   for (let i = 0; i < run.trials; i++) {
-    const seed = run.seed + i;
-    const name = trialName(i, seed);
-    if (!files.has(name) && include(name)) tasks.push({name, sourceFile: join(directory, name), seed,
-      generator: {...run.generator, seed}, hullOptions: run.hullOptions ?? {}, solveOptions: run.solveOptions ?? {}});
+    const seed = run.seed + i
+    const name = trialName(i, seed)
+    if (not files.has(name) and include(name)) tasks.push({name, sourceFile: join(directory, name), seed,
+      generator: {...run.generator, seed}, hullOptions: run.hullOptions ?? {}, solveOptions: run.solveOptions ?? {}})
   }
-  return tasks;
+  return tasks
 }
 
 export function taskInput(task: TrialTask): {points: Vector[]; generator?: GeneratorSpec} {
-  if (task.input) return task.input;
-  if (task.sourceFile && existsSync(task.sourceFile)) {
-    const saved = JSON.parse(readFileSync(task.sourceFile, 'utf8'));
-    return {points: saved.points, generator: saved.generator};
+  if (task.input) return task.input
+  if (task.sourceFile and existsSync(task.sourceFile)) {
+    const saved = JSON.parse(readFileSync(task.sourceFile, 'utf8'))
+    return {points: saved.points, generator: saved.generator}
   }
-  if (task.generator) return generatedInput(task.generator);
-  throw new Error(`Cannot reconstruct missing trial ${task.sourceFile ?? task.name}`);
+  if (task.generator) return generatedInput(task.generator)
+  throw new Error(`Cannot reconstruct missing trial ${task.sourceFile ?? task.name}`)
 }
 
 function generatorKey(g: GeneratorSpec): string {
-  return JSON.stringify([g.family, g.dimension, g.count, g.distribution ?? 'sphere', g.scales ?? Array(g.dimension).fill(1)]);
+  return JSON.stringify([g.family, g.dimension, g.count, g.distribution ?? 'sphere', g.scales ?? Array(g.dimension).fill(1)])
 }
 
 // The entire planned range is reserved, even for unfinished runs. Matching
 // ignores tolerances and solver limits, which do not affect generated points.
 export function nextSearchSeed(parent: string, generator: GeneratorSpec, trials: number): number {
-  const key = generatorKey(generator);
-  let next = 0;
+  const key = generatorKey(generator)
+  let next = 0
   const reserve = (g: GeneratorSpec | undefined, start: number, count: number): void => {
-    if (!g || g.family !== 'random' || generatorKey(g) !== key) return;
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(start + count)) throw new Error('Invalid seed range in saved history; specify --seed explicitly.');
+    if (not g or g.family !== 'random' or generatorKey(g) !== key) return
+    if (not Number.isSafeInteger(start) or not Number.isSafeInteger(count) or count < 0 or not Number.isSafeInteger(start + count)) throw new Error('Invalid seed range in saved history; specify --seed explicitly.')
     // Mulberry32 reduces seeds modulo 2^32. Refuse ambiguous legacy ranges.
-    if (start < 0 || start + count > 2 ** 32) throw new Error('Saved matching seeds wrap the 32-bit PRNG range; specify --seed explicitly.');
-    next = Math.max(next, start + count);
-  };
-  function scan(directory: string): void {
-    const entries = readdirSync(directory, {withFileTypes: true});
-    if (entries.some(e => e.isFile() && e.name === 'run.json')) {
-      const run = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'));
-      if (run.generator) { reserve(run.generator, run.seed, run.trials); }
-      else if (Array.isArray(run.tasks)) {
-        for (const task of run.tasks) reserve(task.generator, task.generator?.seed, 1);
-      } else if (Array.isArray(run.sourceFiles)) {
-        for (const file of run.sourceFiles) {
-          const saved = JSON.parse(readFileSync(file, 'utf8'));
-          reserve(saved.generator, saved.generator?.seed, 1);
-        }
-      }
-    }
-    for (const e of entries) if (e.isDirectory() && !e.isSymbolicLink() && e.name !== '.seed-allocation-lock') scan(join(directory, e.name));
+    if (start < 0 or start + count > 2 ** 32) throw new Error('Saved matching seeds wrap the 32-bit PRNG range; specify --seed explicitly.')
+    next = Math.max(next, start + count)
   }
-  scan(parent);
-  if (next + trials > 2 ** 32) throw new Error('Automatic seeds exhausted the 32-bit PRNG range; specify --seed explicitly to allow reuse.');
-  return next;
+  function scan(directory: string): void {
+    const entries = readdirSync(directory, {withFileTypes: true})
+    if (entries.some((e) => e.isFile() and e.name is 'run.json')) {
+      const run = JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8'))
+      if (run.generator)
+        reserve(run.generator, run.seed, run.trials)
+      else if (Array.isArray(run.tasks))
+        for (const task of run.tasks) reserve(task.generator, task.generator?.seed, 1)
+      else if (Array.isArray(run.sourceFiles))
+        for (const file of run.sourceFiles) {
+          const saved = JSON.parse(readFileSync(file, 'utf8'))
+          reserve(saved.generator, saved.generator?.seed, 1)
+        }
+    }
+    for (const e of entries) if (e.isDirectory() and not e.isSymbolicLink() and e.name !== '.seed-allocation-lock') scan(join(directory, e.name))
+  }
+  scan(parent)
+  if (next + trials > 2 ** 32) throw new Error('Automatic seeds exhausted the 32-bit PRNG range; specify --seed explicitly to allow reuse.')
+  return next
 }
 
 // Serialize reading history and writing the new run metadata across processes.
 // A bounded wait avoids hanging on a lock left by a killed process.
 export function withSeedLock<T>(parent: string, action: () => T): T {
-  mkdirSync(parent, {recursive: true});
-  const lock = join(parent, '.seed-allocation-lock');
-  const start = performance.now();
+  mkdirSync(parent, {recursive: true})
+  const lock = join(parent, '.seed-allocation-lock')
+  const start = performance.now()
   while (true) {
     try { mkdirSync(lock); break; } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (performance.now() - start > 10_000) throw new Error(`Seed allocation is locked at ${lock}. Another search may be starting; if it was killed, remove this empty lock directory and retry.`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (performance.now() - start > 10_000) throw new Error(`Seed allocation is locked at ${lock}. Another search may be starting; if it was killed, remove this empty lock directory and retry.`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     }
   }
   try { return action(); } finally { rmdirSync(lock); }

@@ -1,59 +1,58 @@
-"civet esCompat";
-import assert from 'node:assert/strict';
-import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
-import {Session} from 'node:inspector/promises';
-import {convexHull, solve} from '../src/index.civet';
-import type {OverlapMethod, SolveOptions} from '../src/index.civet';
+import assert from 'node:assert/strict'
+import {readFileSync, writeFileSync, mkdirSync} from 'node:fs'
+import {Session} from 'node:inspector/promises'
+import {convexHull, solve} from '../src/index.civet'
+import type {OverlapMethod, SolveOptions} from '../src/index.civet'
 
-import type {BenchmarkCase} from './fixtures.civet';
-mkdirSync('bench/output', {recursive: true});
-const cases = JSON.parse(readFileSync('bench/completed-cases.json', 'utf8')) as BenchmarkCase[];
-const prepared = cases.map(item => {
+import type {BenchmarkCase} from './fixtures.civet'
+mkdirSync('bench/output', {recursive: true})
+const cases = JSON.parse(readFileSync('bench/completed-cases.json', 'utf8')) as BenchmarkCase[]
+const prepared = cases.map((item) => {
   const start = performance.now();
   const hullOptions = item.hullOptions;
   const poly = convexHull(item.coordinates, hullOptions);
   const hullMs = performance.now() - start;
   const options: SolveOptions = {...item.solveOptions, maxNodes: Infinity, timeoutMs: Infinity};
   return {item, poly, options, hullOptions, hullMs};
-});
-const rows: object[] = [];
+})
+const rows: object[] = []
 for (const {item, poly, options, hullMs} of prepared) {
-  console.log(`${item.generator.dimension}D/${item.generator.count} seed ${item.generator.seed}, saved ${item.savedNodes} nodes`);
-  let reference: ReturnType<typeof solve> | undefined;
+  console.log(`${item.generator.dimension}D/${item.generator.count} seed ${item.generator.seed}, saved ${item.savedNodes} nodes`)
+  let reference: ReturnType<typeof solve> | undefined
   for (let round = 0; round < 3; round++) {
-    const methods: OverlapMethod[] = round % 2 ? ['dual-lp', 'enumerate'] : ['enumerate', 'dual-lp'];
+    const methods: OverlapMethod[] = round % 2 ? ['dual-lp', 'enumerate'] : ['enumerate', 'dual-lp']
     for (const method of methods) {
-      const result = solve(poly, {...options, overlapMethod: method});
-      assert.equal(result.status, 'found');
-      assert.equal(result.termination, 'solution');
-      if (!reference) reference = result;
-      assert.deepEqual({...result.stats, elapsedMs: 0}, {...reference.stats, elapsedMs: 0});
-      assert.deepEqual(result.tree, reference.tree);
-      rows.push({dimension: item.generator.dimension, points: item.generator.count, seed: item.generator.seed, method, round, hullMs, searchMs: result.stats.elapsedMs, stats: result.stats, overlapStats: result.overlapStats});
-      console.log(`  ${method}: ${result.stats.elapsedMs.toFixed(2)}ms, ${result.stats.nodes} nodes`);
+      const result = solve(poly, {...options, overlapMethod: method})
+      assert.equal(result.status, 'found')
+      assert.equal(result.termination, 'solution')
+      if (not reference) reference = result
+      assert.deepEqual({...result.stats, elapsedMs: 0}, {...reference.stats, elapsedMs: 0})
+      assert.deepEqual(result.tree, reference.tree)
+      rows.push({dimension: item.generator.dimension, points: item.generator.count, seed: item.generator.seed, method, round, hullMs, searchMs: result.stats.elapsedMs, stats: result.stats, overlapStats: result.overlapStats})
+      console.log(`  ${method}: ${result.stats.elapsedMs.toFixed(2)}ms, ${result.stats.nodes} nodes`)
     }
   }
-  writeFileSync('bench/output/completed-results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, rows}, null, 2));
+  writeFileSync('bench/output/completed-results.json', JSON.stringify({date: new Date().toISOString(), node: process.version, rows}, null, 2))
 }
 
 // Profile only warmed work: imports and input reads are outside both profiles.
-const session = new Session(); session.connect();
-await session.post('Profiler.enable');
-await session.post('Profiler.setSamplingInterval', {interval: 1000});
+const session = new Session(); session.connect()
+await session.post('Profiler.enable')
+await session.post('Profiler.setSamplingInterval', {interval: 1000})
 for (const mode of ['search', 'pipeline']) {
-  await session.post('Profiler.start');
-  const start = performance.now();
-  let solves = 0;
+  await session.post('Profiler.start')
+  const start = performance.now()
+  let solves = 0
   while (performance.now() - start < 6000) {
     for (const {item, poly, options, hullOptions} of prepared) {
-      const input = mode === 'pipeline' ? convexHull(item.coordinates, hullOptions) : poly;
-      const result = solve(input, {...options, overlapMethod: 'dual-lp'});
-      assert.equal(result.status, 'found'); solves++;
+      const input = mode is 'pipeline' ? convexHull(item.coordinates, hullOptions) : poly
+      const result = solve(input, {...options, overlapMethod: 'dual-lp'})
+      assert.equal(result.status, 'found'); solves++
     }
   }
-  const {profile} = await session.post('Profiler.stop');
-  writeFileSync(`bench/output/completed-${mode}.cpuprofile`, JSON.stringify(profile));
-  console.log(`Profiled ${solves} full ${mode} solves in ${(performance.now() - start).toFixed(0)}ms`);
+  const {profile} = await session.post('Profiler.stop')
+  writeFileSync(`bench/output/completed-${mode}.cpuprofile`, JSON.stringify(profile))
+  console.log(`Profiled ${solves} full ${mode} solves in ${(performance.now() - start).toFixed(0)}ms`)
 }
-session.disconnect();
-console.log('All full searches matched. Results saved to bench/output/');
+session.disconnect()
+console.log('All full searches matched. Results saved to bench/output/')

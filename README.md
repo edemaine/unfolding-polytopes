@@ -6,7 +6,7 @@ What about higher dimensions? Can every convex polytope in $d$ dimensions be unf
 
 ## Running
 
-The implementation is Civet, currently using TypeScript syntax with the `civet esCompat` directive. It runs directly; no build step is required. Use Node.js 22+ and pnpm.
+The implementation is in [Civet](https://civet.dev). It runs directly; no build step is required. Use Node.js 22+ and pnpm.
 
 ```sh
 pnpm install
@@ -222,7 +222,6 @@ Strictly positive weights characterize interior intersection for these full-dime
 Import from `src/index.civet`:
 
 ```ts
-"civet esCompat";
 import {convexHull, randomPoints, solve, developTree} from './src/index.civet';
 
 const points = randomPoints(5, 9, 42, 'sphere');
@@ -231,7 +230,7 @@ const result = solve(polytope, {maxNodes: 1000000, timeoutMs: 60000});
 console.log(result.status, result.stats);
 if (result.tree) {
   const facets = developTree(polytope, result.tree);
-  console.log(facets.map(f => f.coordinates));
+  console.log(facets.map((f) => f.coordinates));
 }
 ```
 

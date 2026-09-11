@@ -1,77 +1,76 @@
-"civet esCompat";
-import assert from 'node:assert/strict';
-import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
-import {convexHull, rootPlacement, attachFacet, interiorOverlap, overlapMethods, solve} from '../src/index.civet';
-import type {Placement, SolveOptions} from '../src/index.civet';
-import type {BenchmarkCase} from './fixtures.civet';
-import {randomSource} from '../src/generators.civet';
-import {dot} from '../src/linalg.civet';
+import assert from 'node:assert/strict'
+import {readFileSync, writeFileSync, mkdirSync} from 'node:fs'
+import {convexHull, rootPlacement, attachFacet, interiorOverlap, overlapMethods, solve} from '../src/index.civet'
+import type {Placement, SolveOptions} from '../src/index.civet'
+import type {BenchmarkCase} from './fixtures.civet'
+import {randomSource} from '../src/generators.civet'
+import {dot} from '../src/linalg.civet'
 
-mkdirSync('bench/output', {recursive: true});
-const cases = JSON.parse(readFileSync(process.argv[2] ?? 'bench/sampled-cases.json', 'utf8')) as BenchmarkCase[];
-const rows: object[] = [], failures: object[] = [];
-let pairComparisons = 0, searchComparisons = 0;
-const output = 'bench/output/sampled-results.json';
-const start = performance.now();
+mkdirSync('bench/output', {recursive: true})
+const cases = JSON.parse(readFileSync(process.argv[2] ?? 'bench/sampled-cases.json', 'utf8')) as BenchmarkCase[]
+const rows: object[] = [], failures: object[] = []
+let pairComparisons = 0, searchComparisons = 0
+const output = 'bench/output/sampled-results.json'
+const start = performance.now()
 function save(): void { writeFileSync(output, JSON.stringify({date: new Date().toISOString(), node: process.version, cases, pairComparisons, searchComparisons, elapsedMs: performance.now() - start, failures, rows}, null, 2) + '\n'); }
 function mismatch(context: object, a: Placement, b: Placement, tolerance: number, expected: boolean, actual: boolean): void {
-  const file = `bench/output/sampled-failures/pair-${failures.length}.json`;
-  mkdirSync('bench/output/sampled-failures', {recursive: true});
-  writeFileSync(file, JSON.stringify({context, a, b, tolerance, expected, actual}, null, 2));
-  failures.push({context, file, expected, actual});
+  const file = `bench/output/sampled-failures/pair-${failures.length}.json`
+  mkdirSync('bench/output/sampled-failures', {recursive: true})
+  writeFileSync(file, JSON.stringify({context, a, b, tolerance, expected, actual}, null, 2))
+  failures.push({context, file, expected, actual})
 }
 
 for (let index = 0; index < cases.length; index++) {
-  const item = cases[index], {dimension: d, count: n, seed} = item.generator;
-  console.log(`[${index + 1}/${cases.length}] ${d}D n=${n} seed=${seed} (${item.status})`);
-  const poly = convexHull(item.coordinates, item.hullOptions);
-  const tolerance = item.solveOptions.overlapTolerance ?? 16 * poly.tolerance;
-  const pairs: [Placement, Placement][] = [];
-  const random = randomSource(seed);
+  const item = cases[index], {dimension: d, count: n, seed} = item.generator
+  console.log(`[${index + 1}/${cases.length}] ${d}D n=${n} seed=${seed} (${item.status})`)
+  const poly = convexHull(item.coordinates, item.hullOptions)
+  const tolerance = item.solveOptions.overlapTolerance ?? 16 * poly.tolerance
+  const pairs: [Placement, Placement][] = []
+  const random = randomSource(seed)
   for (let tree = 0; tree < 2; tree++) {
-    const root = tree === 0 ? 0 : Math.floor(random() * poly.facets.length);
-    const placed = new Map<number, Placement>([[root, rootPlacement(poly, root)]]), queue = [root];
+    const root = tree is 0 ? 0 : Math.floor(random() * poly.facets.length)
+    const placed = new Map<number, Placement>([[root, rootPlacement(poly, root)]]), queue = [root]
     for (let i = 0; i < queue.length; i++) {
-      const edges = [...poly.facets[queue[i]].ridges];
+      const edges = [...poly.facets[queue[i]].ridges]
       for (let j = edges.length - 1; j > 0; j--) { const k = Math.floor(random() * (j + 1)); [edges[j], edges[k]] = [edges[k], edges[j]]; }
       for (const ridge of edges) {
-        const parent = placed.get(queue[i])!, childId = poly.ridges[ridge].facets.find(f => f !== parent.facet)!;
-        if (placed.has(childId)) continue;
-        const child = attachFacet(poly, parent, ridge);
-        placed.set(childId, child); queue.push(childId);
-        if (pairs.length < 24 * (tree + 1)) pairs.push([parent, child]);
+        const parent = placed.get(queue[i])!, childId = poly.ridges[ridge].facets.find((f) => f !== parent.facet)!
+        if (placed.has(childId)) continue
+        const child = attachFacet(poly, parent, ridge)
+        placed.set(childId, child); queue.push(childId)
+        if (pairs.length < 24 * (tree + 1)) pairs.push([parent, child])
       }
     }
-    const faces = [...placed.values()];
-    for (let i = 0; i < 96; i++) pairs.push([faces[Math.floor(random() * faces.length)], faces[Math.floor(random() * faces.length)]]);
+    const faces = [...placed.values()]
+    for (let i = 0; i < 96; i++) pairs.push([faces[Math.floor(random() * faces.length)], faces[Math.floor(random() * faces.length)]])
   }
-  const expected = pairs.map(([a, b]) => interiorOverlap(a, b, tolerance, undefined, 'enumerate'));
-  const options: SolveOptions = {...item.solveOptions, maxNodes: 40, overlapTolerance: tolerance};
-  const reference = solve(poly, {...options, overlapMethod: 'enumerate'});
+  const expected = pairs.map(([a, b]) => interiorOverlap(a, b, tolerance, undefined, 'enumerate'))
+  const options: SolveOptions = {...item.solveOptions, maxNodes: 40, overlapTolerance: tolerance}
+  const reference = solve(poly, {...options, overlapMethod: 'enumerate'})
   for (let round = 0; round < 2; round++) {
     for (let offset = 0; offset < overlapMethods.length; offset++) {
-      const method = overlapMethods[(offset + index + round * 5) % overlapMethods.length];
-      const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
-      const before = performance.now();
+      const method = overlapMethods[(offset + index + round * 5) % overlapMethods.length]
+      const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0}
+      const before = performance.now()
       for (let i = 0; i < pairs.length; i++) {
-        const [a, b] = pairs[i], actual = interiorOverlap(a, b, tolerance, undefined, method, stats);
-        if (method !== 'enumerate') pairComparisons++;
-        if (actual !== expected[i]) mismatch({index, method, round, i}, a, b, tolerance, expected[i], actual);
+        const [a, b] = pairs[i], actual = interiorOverlap(a, b, tolerance, undefined, method, stats)
+        if (method !== 'enumerate') pairComparisons++
+        if (actual !== expected[i]) mismatch({index, method, round, i}, a, b, tolerance, expected[i], actual)
       }
-      const pairMs = performance.now() - before;
-      const result = solve(poly, {...options, overlapMethod: method});
+      const pairMs = performance.now() - before
+      const result = solve(poly, {...options, overlapMethod: method})
       try {
-        assert.deepEqual({...result.stats, elapsedMs: 0}, {...reference.stats, elapsedMs: 0});
-        assert.deepEqual(result.tree, reference.tree);
-        assert.equal(result.status, reference.status);
-        assert.equal(result.termination, reference.termination);
+        assert.deepEqual({...result.stats, elapsedMs: 0}, {...reference.stats, elapsedMs: 0})
+        assert.deepEqual(result.tree, reference.tree)
+        assert.equal(result.status, reference.status)
+        assert.equal(result.termination, reference.termination)
       } catch (error) { failures.push({index, method, round, kind: 'search', result, reference, error: String(error)}); }
-      if (method !== 'enumerate') searchComparisons++;
-      rows.push({index, d, points: n, seed, facets: poly.facets.length, method, round, pairs: pairs.length, overlaps: expected.filter(Boolean).length, pairMs, pairStats: stats, solveMs: result.stats.elapsedMs, solveStats: result.overlapStats, nodes: result.stats.nodes, status: result.status});
+      if (method !== 'enumerate') searchComparisons++
+      rows.push({index, d, points: n, seed, facets: poly.facets.length, method, round, pairs: pairs.length, overlaps: expected.filter(Boolean).length, pairMs, pairStats: stats, solveMs: result.stats.elapsedMs, solveStats: result.overlapStats, nodes: result.stats.nodes, status: result.status})
     }
   }
-  save();
-  console.log(`  ${poly.facets.length} facets; ${pairs.length} pairs (${expected.filter(Boolean).length} overlapping); ${reference.stats.nodes} nodes; ${failures.length} disagreements`);
+  save()
+  console.log(`  ${poly.facets.length} facets; ${pairs.length} pairs (${expected.filter(Boolean).length} overlapping); ${reference.stats.nodes} nodes; ${failures.length} disagreements`)
 }
 
 // Rotated boxes ensure near-contact checks cannot usually stop at the AABB.
@@ -79,28 +78,28 @@ for (let index = 0; index < cases.length; index++) {
 // have common inradius gap/2, where gap is their overlap in that axis.
 for (let k = 1; k <= 5; k++) {
   function rotate(p: number[]): number[] {
-    const q = [...p];
+    const q = [...p]
     for (let j = 1; j < k; j++) { const x = q[0], y = q[j], angle = .37 + .11 * j; q[0] = Math.cos(angle) * x - Math.sin(angle) * y; q[j] = Math.sin(angle) * x + Math.cos(angle) * y; }
-    return q;
+    return q
   }
   function box(shift: number): Placement {
-    const translation = rotate(Array.from({length: k}, (_, j) => j === 0 ? shift : 0));
-    const coordinates = Array.from({length: 2 ** k}, (_, mask) => rotate(Array.from({length: k}, (_, j) => mask & 2 ** j ? 1 : -1)).map((x, j) => x + translation[j]));
-    const halfspaces = Array.from({length: 2 * k}, (_, i) => { const normal = rotate(Array.from({length: k}, (_, j) => j === Math.floor(i / 2) ? (i % 2 ? 1 : -1) : 0)); return {normal, offset: 1 + dot(normal, translation)}; });
-    return {facet: 0, linear: [], translation, vertices: coordinates.map((_, i) => i), coordinates, halfspaces, min: coordinates[0].map((_, j) => Math.min(...coordinates.map(p => p[j]))), max: coordinates[0].map((_, j) => Math.max(...coordinates.map(p => p[j])))};
+    const translation = rotate(Array.from({length: k}, (_, j) => j is 0 ? shift : 0))
+    const coordinates = Array.from({length: 2 ** k}, (_, mask) => rotate(Array.from({length: k}, (_, j) => mask & 2 ** j ? 1 : -1)).map((x, j) => x + translation[j]))
+    const halfspaces = Array.from({length: 2 * k}, (_, i) => { const normal = rotate(Array.from({length: k}, (_, j) => j is Math.floor(i / 2) ? (i % 2 ? 1 : -1) : 0)); return {normal, offset: 1 + dot(normal, translation)}; })
+    return {facet: 0, linear: [], translation, vertices: coordinates.map((_, i) => i), coordinates, halfspaces, min: coordinates[0].map((_, j) => Math.min(...coordinates.map((p) => p[j]))), max: coordinates[0].map((_, j) => Math.max(...coordinates.map((p) => p[j])))}
   }
   for (const tolerance of [1e-10, 1.6e-8, 1e-6]) {
     for (const depth of [-4, 0, 1, 1.9, 2.1, 4]) {
-      const a = box(0), b = box(2 - depth * tolerance), analytic = depth > 2;
+      const a = box(0), b = box(2 - depth * tolerance), analytic = depth > 2
       for (const method of overlapMethods) {
-        const actual = interiorOverlap(a, b, tolerance, undefined, method);
-        pairComparisons++;
-        if (actual !== analytic) mismatch({kind: 'analytic-box', k, depth, method}, a, b, tolerance, analytic, actual);
+        const actual = interiorOverlap(a, b, tolerance, undefined, method)
+        pairComparisons++
+        if (actual !== analytic) mismatch({kind: 'analytic-box', k, depth, method}, a, b, tolerance, analytic, actual)
       }
     }
   }
-  console.log(`Analytic rotated boxes in ${k} dimensions checked; ${failures.length} disagreements`);
+  console.log(`Analytic rotated boxes in ${k} dimensions checked; ${failures.length} disagreements`)
 }
-save();
-console.log(`${pairComparisons} pair comparisons; ${searchComparisons} search comparisons; ${failures.length} disagreements. Results: ${output}`);
-if (failures.length) process.exitCode = 1;
+save()
+console.log(`${pairComparisons} pair comparisons; ${searchComparisons} search comparisons; ${failures.length} disagreements. Results: ${output}`)
+if (failures.length) process.exitCode = 1
