@@ -1,4 +1,5 @@
 assert from node:assert/strict
+{median} from ./util.civet
 {readFileSync, writeFileSync, mkdirSync} from node:fs
 {convexHull, hypercube, crossPolytope, solve} from ../src/index.civet
 type {Polytope, HullMethod} from ../src/index.civet
@@ -34,8 +35,6 @@ for [index, item] of cases.entries()
   assert.deepEqual {...sa.stats, elapsedMs: 0}, {...sb.stats, elapsedMs: 0}, item.name
   fallbacks++ if b.hullFallback
 
-  function median(xs: number[]): number
-    [...xs].sort((x, y) => x - y)[1]
   enumerateMs := median(elapsed.enumerate); incrementalMs := median elapsed.incremental
   rows.push {item.name, a.dimension, points: item.points#, facets: a.facets#, enumerateMs, incrementalMs, speedup: enumerateMs / incrementalMs, elapsed, enumerateWork: a.hullCombinations, incrementalWork: b.hullCombinations, actualMethod: b.hullMethod, fallback: b.hullFallback}
   console.log `[${index + 1}/${cases#}] ${item.name}: ${enumerateMs.toFixed 2} -> ${incrementalMs.toFixed 2} ms (${(enumerateMs / incrementalMs).toFixed 2}x)`

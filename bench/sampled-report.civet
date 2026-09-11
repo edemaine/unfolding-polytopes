@@ -1,4 +1,5 @@
 {readFileSync, writeFileSync} from node:fs
+{median} from ./util.civet
 interface Row
   index: number
   d: number
@@ -19,10 +20,6 @@ analyticChecks := data.pairComparisons - rows.filter((r) => r.method is not 'enu
 throw new Error('The sampled benchmark is not complete yet.') if new Set(rows.map(.index)).size is not data.cases# or analyticChecks is not 90 * new Set(rows.map(.method)).size
 methods := [...new Set rows.map(.method)].sort()
 groups := [...new Set rows.map (r) => `${r.d}/${r.points}`]
-function median(values: number[]): number
-  sorted := [...values].sort (a, b) => a - b
-  mid := Math.floor sorted# / 2
-  sorted# % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 
 report .= `# Benchmarks sampled from saved runs\n\n${data.date}, Node ${data.node}. ${data.cases#} cases across ${groups#} parameter sets; ${data.pairComparisons} pair comparisons and ${data.searchComparisons} bounded-search comparisons, with **${data.failures#} disagreements**. Counts include repeated timings and repeated pairs, not distinct geometric configurations.\n\n`
 report += 'The portable case list contains exact input coordinates and numerical settings. The default suite samples the first, middle, and slowest recorded seeds for each parameter set, prioritizing inconclusive cases; it also includes three planned 6D/20-point examples. The default fixtures are in [sampled-cases.json](../sampled-cases.json); the raw output embeds the cases actually used.

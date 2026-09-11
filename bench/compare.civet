@@ -1,4 +1,5 @@
 assert from node:assert/strict
+{median} from ./util.civet
 {mkdirSync, readFileSync, writeFileSync} from node:fs
 {resolve} from node:path
 {pathToFileURL} from node:url
@@ -44,8 +45,6 @@ for [index, item] of cases.entries()
         result := versions[version].solve hulls[version], options
         searchTimes[version].push result.stats.elapsedMs
 
-  function median(xs: number[]): number
-    [...xs].sort((a, b) => a - b)[Math.floor xs# / 2]
   rows.push {item.name, elapsed, searchTimes, beforeHullMs: median(elapsed.before), afterHullMs: median(elapsed.after), beforeSearchMs: median(searchTimes.before), afterSearchMs: median searchTimes.after}
   console.log `[${index + 1}/${cases#}] ${item.name}: hull ${(median(elapsed.before) / median elapsed.after).toFixed 2}x${limit is Infinity ? ` search ${(median(searchTimes.before) / median searchTimes.after).toFixed 2}x` : ''}`
 writeFileSync 'bench/output/optimization-results.json', JSON.stringify({date: (new Date).toISOString(), node: process.version, reference, rounds: 5, rows}, null, 2) + '\n'

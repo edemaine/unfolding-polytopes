@@ -1,4 +1,5 @@
 {readFileSync, writeFileSync} from node:fs
+{median} from ./util.civet
 interface Row
   d: number
   points: number
@@ -15,8 +16,6 @@ export function writeReport(): void
   methods := [...new Set rows.map(.method)]
   cases := [...new Set rows.map (r) => `${r.d}/${r.points}/${r.seed}`]
 
-  function median(numbers: number[]): number
-    [...numbers].sort((a, b) => a - b)[Math.floor numbers# / 2]
   report .= `# Overlap benchmark\n\nMeasured ${data.date}, Node ${data.node}. Run \`pnpm bench\` to regenerate the raw JSON and this report.\n\n`
   report += 'Three rounds rotate method order. Each search uses the same root, branch order, and 120-node cap, stopping earlier on success. Pair tests sample a breadth-first development, including self pairs. All pair decisions, search counts, and witness trees match enumeration. Hull construction and startup are excluded; LP construction, solving, geometric checks, and fallbacks are included. Other jobs may compete for CPU; submillisecond results are noisy. These are bounded workloads, not completed counterexample searches.\n\n'
   report += 'Median search time (milliseconds); columns are dimension / input points / seed (`-1` means cube).\n\n'

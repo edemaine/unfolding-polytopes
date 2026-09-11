@@ -1,4 +1,5 @@
 {readFileSync, writeFileSync} from node:fs
+{median} from ./util.civet
 interface Row
   dimension: number
   points: number
@@ -10,8 +11,6 @@ interface Row
 
 {rows} := JSON.parse(readFileSync 'bench/output/completed-results.json', 'utf8') as {rows: Row[]}
 
-function median(x: number[]): number
-  [...x].sort((a, b) => a - b)[Math.floor x# / 2]
 report .= '# Full completed searches and bottlenecks\n\nTen saved successful examples, originally under ten seconds of search time, rerun to completion three times per backend. No node or time cutoff. Backend order alternates. Every search has the same node/prune/solution counts and first witness tree across methods. Times below are medians in milliseconds. Hulls are prepared once and excluded from search timing.\n\n'
 report += '| d | Points | Seed | Nodes | Enumeration | Dual LP | Speedup | Hull construction* |\n|---|---|---|---:|---:|---:|---:|---:|\n'
 oldTotal .= 0; newTotal .= 0

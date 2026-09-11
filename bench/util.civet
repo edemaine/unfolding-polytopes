@@ -1,0 +1,5 @@
+// Average the middle pair when aggregating an even number of measurements.
+export function median(values: number[]): number
+  sorted := [...values].sort (a, b) => a - b
+  mid := Math.floor sorted# / 2
+  sorted# % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
