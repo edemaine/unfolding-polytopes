@@ -1,13 +1,11 @@
 
 // Keep incidence and the tree together: ridge IDs can change if a future hull
 // implementation changes its ordering. Only developed placements are omitted.
-export function trialJSON(record: any, full = false): string {
-  full ||= record.result?.status is 'no-unfolding'
-  const {outputDetail: previous, ...rest} = record
-  const value = {outputDetail: full ? 'full' : 'concise', ...rest}
-  if (not full and value.result) {
-    const {placements, ...result} = value.result
+export function trialJSON(record: any, full = false): string
+  full or= record.result?.status is 'no-unfolding'
+  {outputDetail: previous, ...rest} := record
+  value := {outputDetail: full ? 'full' : 'concise', ...rest}
+  if not full and value.result
+    {placements, ...result} := value.result
     value.result = result
-  }
-  return JSON.stringify(value, (_, v) => v is Infinity ? 'Infinity' : v, full ? 2 : undefined) + '\n'
-}
+  JSON.stringify(value, (_, v) => v is Infinity ? 'Infinity' : v, full ? 2 : undefined) + '\n'

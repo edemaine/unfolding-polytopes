@@ -1,81 +1,111 @@
-import {closeSync, existsSync, fsyncSync, lstatSync, openSync, readSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync} from 'node:fs'
-import {join} from 'node:path'
-import {randomUUID} from 'node:crypto'
-import {trialStatuses} from './jobs.civet'
-import {trialJSON} from './storage.civet'
+{closeSync, existsSync, fsyncSync, lstatSync, openSync, readSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync} from node:fs
+{join} from node:path
+{randomUUID} from node:crypto
+{trialStatuses} from ./jobs.civet
+{trialJSON} from ./storage.civet
 
-export function compactResults(paths: string[], dryRun = false, progress: (row: object) => void = => {;}) {
-  const totals = {examined: 0, compacted: 0, wouldCompact: 0, alreadyConcise: 0, candidates: 0, pending: 0, invalid: 0, changedDuringRead: 0, errors: 0, savedBytes: 0};
-  const seen = new Set<string>();
-  const warnings: string[] = [];
-  const warn = (file: string, error: unknown): void => {
-    totals.errors++;
-    if (warnings.length < 10) warnings.push(`${file}: ${String(error)}`);
-  };
-  let lastProgress = Date.now();
-  function scan(directory: string): void {
-    directory = realpathSync(directory);
-    const key = process.platform is 'win32' ? directory.toLowerCase() : directory;
-    if (seen.has(key)) return;
-    seen.add(key);
-    const entries = readdirSync(directory, {withFileTypes: true});
-    const finished = existsSync(join(directory, 'summary.json'));
+export function compactResults(paths: string[], dryRun = false, progress: (row: object) => void = => return)
+  totals := examined: 0, compacted: 0, wouldCompact: 0, alreadyConcise: 0, candidates: 0, pending: 0, invalid: 0, changedDuringRead: 0, errors: 0, savedBytes: 0
+  seen := new Set<string>
+  warnings: string[] := []
+
+  function warn(file: string, error: unknown): void
+    totals.errors++
+    warnings.push `${file}: ${String error}` if warnings# < 10
+  lastProgress .= Date.now()
+
+  function scan(directory: string): void
+    directory = realpathSync directory
+    key := process.platform is 'win32' ? directory.toLowerCase() : directory
+    return if seen.has key
+    seen.add key
+    entries := readdirSync directory, withFileTypes: true
+    finished := existsSync join directory, 'summary.json'
     // A writer closes the trial file before appending its journal entry.
     // Unindexed files in unfinished runs may still be open: never rewrite them.
-    const {statuses} = trialStatuses(directory);
-    for (const entry of entries) {
-      if (Date.now() - lastProgress >= 5000) {
-        progress({directory, dryRun, ...totals}); lastProgress = Date.now();
-      }
-      if (not entry.isFile() or not /^trial-.*\.json$/.test(entry.name)) continue;
-      totals.examined++;
-      if (not finished and not statuses.has(entry.name)) { totals.pending++; continue; }
-      const file = join(directory, entry.name);
-      let temporary: string | undefined;
-      try {
-        const before = lstatSync(file);
-        if (not before.isFile()) continue;
+    {statuses} := trialStatuses directory
+    for entry of entries
+      if Date.now() - lastProgress >= 5000
+        progress({directory, dryRun, ...totals}); lastProgress = Date.now()
+      continue if not entry.isFile() or not /^trial-.*\.json$/.test entry.name
+      totals.examined++
+      if not finished and not statuses.has entry.name
+        totals.pending++
+        continue
+
+      file := join directory, entry.name
+      let temporary: string?
+      try
+        before := lstatSync file
+        continue unless before.isFile()
         // Our concise marker is first, so repeat passes need only a tiny read.
-        const fd = openSync(file, 'r');
-        const prefix = Buffer.alloc(32);
-        let count: number;
-        try { count = readSync(fd, prefix, 0, prefix.length, 0); } finally { closeSync(fd); }
-        if (prefix.subarray(0, count).toString().startsWith('{"outputDetail":"concise",')) {
-          totals.alreadyConcise++; continue;
-        }
-        const original = readFileSync(file, 'utf8');
-        let record: any;
-        try { record = JSON.parse(original); } catch { totals.invalid++; continue; }
-        if (record?.result?.status is 'no-unfolding') { totals.candidates++; continue; }
-        if (record?.formatVersion !== 1 or not Array.isArray(record.points) or
-            not (['found', 'inconclusive'].includes(record.result?.status) or typeof record.error is 'string')) {
-          totals.invalid++; continue;
-        }
-        const text = trialJSON(record);
-        const saved = Buffer.byteLength(original) - Buffer.byteLength(text);
-        if (saved <= 0) { totals.alreadyConcise++; continue; }
-        if (dryRun) { totals.wouldCompact++; totals.savedBytes += saved; continue; }
-        temporary = join(directory, `.compact-${randomUUID()}.tmp`);
-        const out = openSync(temporary, 'wx', before.mode);
-        try { writeFileSync(out, text); fsyncSync(out); } finally { closeSync(out); }
-        const after = lstatSync(file);
-        if (before.ino !== after.ino or before.size !== after.size or before.mtimeMs !== after.mtimeMs or before.ctimeMs !== after.ctimeMs) {
-          totals.changedDuringRead++; continue;
-        }
+        fd := openSync file, 'r'
+        prefix := Buffer.alloc 32
+        let count: number
+        try
+          count = readSync fd, prefix, 0, prefix#, 0
+        finally
+          closeSync fd
+
+        if prefix.subarray(0, count).toString().startsWith '{"outputDetail":"concise",'
+          totals.alreadyConcise++; continue
+        original := readFileSync file, 'utf8'
+        let record: any
+        try
+          record = JSON.parse original
+        catch
+          totals.invalid++
+          continue
+
+        if record?.result?.status is 'no-unfolding'
+          totals.candidates++
+          continue
+
+        if record?.formatVersion is not 1 or not Array.isArray(record.points) or
+            not (record.result?.status is in ['found', 'inconclusive'] or record.error <? 'string')
+          totals.invalid++; continue
+        text := trialJSON record
+        saved := Buffer.byteLength(original) - Buffer.byteLength text
+        if saved <= 0
+          totals.alreadyConcise++
+          continue
+
+        if dryRun
+          totals.wouldCompact++
+          totals.savedBytes += saved
+          continue
+
+        temporary = join directory, `.compact-${randomUUID()}.tmp`
+        out := openSync temporary, 'wx', before.mode
+        try
+          writeFileSync out, text
+          fsyncSync out
+        finally
+          closeSync out
+
+        after := lstatSync file
+        if before.ino is not after.ino or before.size is not after.size or before.mtimeMs is not after.mtimeMs or before.ctimeMs is not after.ctimeMs
+          totals.changedDuringRead++; continue
         // Same-directory rename replaces the complete file atomically. Never
         // truncate the original; a failed replacement leaves it intact.
-        renameSync(temporary, file); temporary = undefined;
-        totals.compacted++; totals.savedBytes += saved;
-      } catch (error) { warn(file, error); } finally {
-        if (temporary) { try { unlinkSync(temporary); } catch (error) { warn(temporary, error); } }
-      }
-    }
-    for (const entry of entries) if (entry.isDirectory() and not entry.isSymbolicLink() and not entry.name.startsWith('.')) {
-      try { scan(join(directory, entry.name)); } catch (error) { warn(join(directory, entry.name), error); }
-    }
-    progress({directory, dryRun, ...totals});
-  }
-  const directories = paths.map((path) => realpathSync(path));
-  for (const directory of directories) scan(directory);
-  return {directories, dryRun, ...totals, warnings};
-}
+        renameSync(temporary, file); temporary = undefined
+        totals.compacted++; totals.savedBytes += saved
+      catch (error)
+        warn file, error
+      finally
+        if temporary
+          try
+            unlinkSync temporary
+          catch (error)
+            warn temporary, error
+
+    for entry of entries when entry.isDirectory() and not entry.isSymbolicLink() and not entry.name.startsWith '.'
+      try
+        scan join directory, entry.name
+      catch (error)
+        warn join(directory, entry.name), error
+
+    progress {directory, dryRun, ...totals}
+  directories := paths.map realpathSync .
+  for (directory of directories) scan directory
+  {directories, dryRun, ...totals, warnings}

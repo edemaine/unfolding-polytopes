@@ -1,11 +1,11 @@
-import {attachFacet, interiorOverlap, rootPlacement, overlapMethods} from './unfold.civet'
-import type {Placement, OverlapMethod, OverlapStats} from './unfold.civet'
-import type {Polytope} from './polytope.civet'
+{attachFacet, interiorOverlap, rootPlacement, overlapMethods} from ./unfold.civet
+type {Placement, OverlapMethod, OverlapStats} from ./unfold.civet
+type {Polytope} from ./polytope.civet
 
-export const branchOrders = ['index', 'constrained', 'bottleneck'] as const
+export branchOrders := ['index', 'constrained', 'bottleneck'] as const
 export type BranchOrder = typeof branchOrders[number]
 
-export interface SolveOptions {
+export interface SolveOptions
   overlapMethod?: OverlapMethod
   root?: number
   maxNodes?: number
@@ -17,9 +17,8 @@ export interface SolveOptions {
   forwardCheck?: boolean | 'auto'
   forceBridges?: boolean
   branchOrder?: BranchOrder
-}
 
-export interface SolveResult {
+export interface SolveResult
   status: 'found' | 'no-unfolding' | 'inconclusive'
   termination: 'solution' | 'exhausted' | 'maxNodes' | 'timeout'
   exhaustive: boolean
@@ -32,194 +31,213 @@ export interface SolveResult {
   tree: number[] | null
   placements: Placement[] | null
   stats: {nodes: number; completeTrees: number; overlapPrunes: number; disconnectedPrunes: number; solutions: number; elapsedMs: number}
-}
 
-class SearchLimit extends Error {
-  constructor(public reason: 'maxNodes' | 'timeout') { super(reason); }
-}
+class SearchLimit extends Error
+  constructor(public reason: 'maxNodes' | 'timeout')
+    super reason
 
-export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult {
-  const start = performance.now()
-  const maxNodes = options.maxNodes ?? Infinity
-  const timeoutMs = options.timeoutMs ?? Infinity
-  const eps = options.overlapTolerance ?? 16 * poly.tolerance
-  if (not (maxNodes >= 0) or (maxNodes !== Infinity and not Number.isSafeInteger(maxNodes))) throw new Error('maxNodes must be a nonnegative safe integer or Infinity.')
-  if (not (timeoutMs >= 0) or Number.isNaN(timeoutMs)) throw new Error('timeoutMs must be nonnegative.')
-  if (not (eps > 0 and Number.isFinite(eps))) throw new Error('overlapTolerance must be positive and finite.')
-  const overlapMethod = options.overlapMethod ?? 'dual-lp'
-  if (not overlapMethods.includes(overlapMethod)) throw new Error('Unknown overlap method.')
-  const overlapStats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0}
-  const forwardCheck = options.pruneOverlaps !== false and (options.forwardCheck ?? 'auto')
-  if (not [true, false, 'auto'].includes(forwardCheck)) throw new Error('Invalid forward-check mode.')
-  const forceBridges = options.forceBridges ?? true
-  const branchOrder = options.branchOrder ?? 'constrained'
-  if (not branchOrders.includes(branchOrder)) throw new Error('Unknown branch order.')
-  const searchOptions = {forwardCheck, forceBridges, branchOrder}
-  const searchStats = {placements: 0, reusedPlacements: 0, reusedOverlapChecks: 0, parentChecksSkipped: 0, blockedEdges: 0, forcedEdges: 0, graphChecks: 0}
-  const root = options.root ?? 0
-  const stats = {nodes: 0, completeTrees: 0, overlapPrunes: 0, disconnectedPrunes: 0, solutions: 0, elapsedMs: 0}
-  const placed = new Map<number, Placement>([[root, rootPlacement(poly, root)]])
-  const excluded = new Set<number>()
-  const tree: number[] = []
-  const placementStack = [...placed.values()]
-  interface Candidate {placement: Placement; parent: number; checked: number;}
-  interface Edge {to: number; id: number;}
-  let witnessTree: number[] | null = null
-  let witnessPlacements: Placement[] | null = null
-  const poll = : void => { if (performance.now() - start >= timeoutMs) throw new SearchLimit('timeout'); }
 
-  function graph(): {adjacency: Edge[][]; bridges: Set<number>; connected: boolean} {
+export function solve(poly: Polytope, options: SolveOptions = {}): SolveResult
+  start := performance.now()
+  maxNodes := options.maxNodes ?? Infinity
+  timeoutMs := options.timeoutMs ?? Infinity
+  eps := options.overlapTolerance ?? 16 * poly.tolerance
+  throw new Error('maxNodes must be a nonnegative safe integer or Infinity.') if not (maxNodes >= 0) or maxNodes is not Infinity and not Number.isSafeInteger maxNodes
+  throw new Error('timeoutMs must be nonnegative.') if not (timeoutMs >= 0) or Number.isNaN timeoutMs
+  throw new Error('overlapTolerance must be positive and finite.') unless (eps > 0 and Number.isFinite eps)
+  overlapMethod := options.overlapMethod ?? 'dual-lp'
+  throw new Error('Unknown overlap method.') unless overlapMethod is in overlapMethods
+  overlapStats := calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0
+  forwardCheck := options.pruneOverlaps is not false and (options.forwardCheck ?? 'auto')
+  throw new Error('Invalid forward-check mode.') unless forwardCheck is in [true, false, 'auto']
+  forceBridges := options.forceBridges ?? true
+  branchOrder := options.branchOrder ?? 'constrained'
+  throw new Error('Unknown branch order.') unless branchOrder is in branchOrders
+  searchOptions := {forwardCheck, forceBridges, branchOrder}
+  searchStats := placements: 0, reusedPlacements: 0, reusedOverlapChecks: 0, parentChecksSkipped: 0, blockedEdges: 0, forcedEdges: 0, graphChecks: 0
+  root := options.root ?? 0
+  stats := nodes: 0, completeTrees: 0, overlapPrunes: 0, disconnectedPrunes: 0, solutions: 0, elapsedMs: 0
+  placed := new Map<number, Placement> [[root, rootPlacement poly, root]]
+  excluded := new Set<number>
+  tree: number[] := []
+  placementStack := [...placed.values()]
+  interface Candidate
+    placement: Placement
+    parent: number
+    checked: number
+
+  interface Edge
+    to: number
+    id: number
+
+  witnessTree: number[] | null .= null
+  witnessPlacements: Placement[] | null .= null
+
+  function poll(): void
+    throw new SearchLimit('timeout') if performance.now() - start >= timeoutMs
+
+
+  function graph(): {adjacency: Edge[][]; bridges: Set<number>; connected: boolean}
     searchStats.graphChecks++
-    const contracted = poly.facets.length
-    const adjacency: Edge[][] = Array.from({length: contracted + 1}, => [])
-    for (let id = 0; id < poly.ridges.length; id++) {
-      if (excluded.has(id)) continue
-      const [x, y] = poly.ridges[id].facets
-      const a = placed.has(x) ? contracted : x, b = placed.has(y) ? contracted : y
-      if (a is b) continue
-      adjacency[a].push({to: b, id}); adjacency[b].push({to: a, id})
-    }
-    const discovered = new Int32Array(contracted + 1), low = new Int32Array(contracted + 1)
-    const bridges = new Set<number>()
-    let clock = 0
-    function visitGraph(v: number, parentEdge: number): void {
+    contracted := poly.facets#
+    adjacency: Edge[][] := Array.from length: contracted + 1, => []
+    for id of [0..<poly.ridges#]
+      continue if excluded.has id
+      [x, y] := poly.ridges[id].facets
+      a := placed.has(x) ? contracted : x; b := placed.has(y) ? contracted : y
+      continue if a is b
+      adjacency[a].push({to: b, id}); adjacency[b].push {to: a, id}
+    discovered := new Int32Array(contracted + 1); low := new Int32Array contracted + 1
+    bridges := new Set<number>
+    clock .= 0
+
+    function visitGraph(v: number, parentEdge: number): void
       discovered[v] = low[v] = ++clock
-      for (const {to, id} of adjacency[v]) {
-        if (id is parentEdge) continue // Parallel edges are distinct after contraction.
-        if (not discovered[to]) {
-          visitGraph(to, id); low[v] = Math.min(low[v], low[to])
-          if (low[to] > discovered[v]) bridges.add(id)
-        } else { low[v] = Math.min(low[v], discovered[to]); }
-      }
-    }
-    visitGraph(contracted, -1)
-    return {adjacency, bridges, connected: clock is contracted - placed.size + 1}
-  }
+      for {to, id} of adjacency[v]
+        continue if id is parentEdge // Parallel edges are distinct after contraction.
+        unless discovered[to]
+          visitGraph(to, id); low[v] = Math.min low[v], low[to]
+          bridges.add id if low[to] > discovered[v]
+        else
+          low[v] = Math.min low[v], discovered[to]
 
-  function candidate(id: number, cache: Map<number, Candidate>): Candidate {
-    const cached = cache.get(id)
-    if (cached) { searchStats.reusedPlacements++; return cached; }
-    const edge = poly.ridges[id]
-    const parent = placed.has(edge.facets[0]) ? edge.facets[0] : edge.facets[1]
+    visitGraph contracted, -1
+    {adjacency, bridges, connected: clock is contracted - placed.size + 1}
+
+  function candidate(id: number, cache: Map<number, Candidate>): Candidate
+    cached := cache.get id
+    if cached
+      searchStats.reusedPlacements++
+      return cached
+
+    edge := poly.ridges[id]
+    parent := placed.has(edge.facets[0]) ? edge.facets[0] : edge.facets[1]
     searchStats.placements++
-    const value = {placement: attachFacet(poly, placed.get(parent)!, id), parent, checked: 0}
-    cache.set(id, value)
-    return value
-  }
+    value := {placement: attachFacet(poly, placed.get(parent)!, id), parent, checked: 0}
+    cache.set id, value
+    value
 
-  function viable(id: number, cache: Map<number, Candidate>): boolean {
-    const value = candidate(id, cache)
-    searchStats.reusedOverlapChecks += Math.max(0, value.checked - 1)
-    for (let i = value.checked; i < placementStack.length; i++) {
-      const other = placementStack[i]
-      if (other.facet is value.parent) { searchStats.parentChecksSkipped++; continue; }
-      if (interiorOverlap(value.placement, other, eps, poll, overlapMethod, overlapStats)) return false
-    }
+  function viable(id: number, cache: Map<number, Candidate>): boolean
+    value := candidate id, cache
+    searchStats.reusedOverlapChecks += Math.max 0, value.checked - 1
+    for i of [value.checked..<placementStack#]
+      other := placementStack[i]
+      if other.facet is value.parent
+        searchStats.parentChecksSkipped++
+        continue
+
+      return false if interiorOverlap value.placement, other, eps, poll, overlapMethod, overlapStats
     // Cache entries are immutable: a sibling must not inherit checks against
     // a facet placed only in the branch that just finished.
-    cache.set(id, {...value, checked: placementStack.length})
-    return true
-  }
+    cache.set id, {...value, checked: placementStack#}
+    true
 
-  function choose(frontier: number[], adjacency: Edge[][]): number {
-    if (branchOrder is 'index') return frontier[0]
-    const rootVertex = poly.facets.length
-    const child = (id: number): number => poly.ridges[id].facets.find((f) => not placed.has(f))!
-    function alternativeDistance(id: number): number {
-      const target = child(id), distance = new Int32Array(adjacency.length); distance.fill(-1)
+  function choose(frontier: number[], adjacency: Edge[][]): number
+    return frontier[0] if branchOrder is 'index'
+    rootVertex := poly.facets#
+
+    function child(id: number): number
+      poly.ridges[id].facets.find((f) => not placed.has f)!
+
+    function alternativeDistance(id: number): number
+      target := child(id); distance := new Int32Array(adjacency#); distance.fill -1
       distance[rootVertex] = 0
-      const queue = [rootVertex]
-      for (let i = 0; i < queue.length; i++) {
-        for (const edge of adjacency[queue[i]]) if (edge.id !== id and distance[edge.to] < 0) {
+      queue := [rootVertex]
+      for i .= 0; i < queue#; i++
+        for edge of adjacency[queue[i]] when edge.id is not id and distance[edge.to] < 0
           distance[edge.to] = distance[queue[i]] + 1
-          if (edge.to is target) return distance[edge.to]
-          queue.push(edge.to)
-        }
-      }
-      return Infinity
-    }
-    let best = frontier[0], bestDegree = adjacency[child(best)].length
-    let bestDistance = branchOrder is 'bottleneck' ? alternativeDistance(best) : 0
-    for (const id of frontier.slice(1)) {
-      const degree = adjacency[child(id)].length
-      const distance = branchOrder is 'bottleneck' ? alternativeDistance(id) : 0
-      if (distance > bestDistance or distance is bestDistance and degree < bestDegree) {
+          return distance[edge.to] if edge.to is target
+          queue.push edge.to
+      Infinity
+    best .= frontier[0]; bestDegree .= adjacency[child best]#
+    bestDistance .= branchOrder is 'bottleneck' ? alternativeDistance(best) : 0
+    for id of frontier[>=1]
+      degree := adjacency[child id]#
+      distance := branchOrder is 'bottleneck' ? alternativeDistance(id) : 0
+      if distance > bestDistance or distance is bestDistance and degree < bestDegree
         best = id; bestDegree = degree; bestDistance = distance
-      }
-    }
-    return best
-  }
+    best
 
-  function visit(previous = new Map<number, Candidate>()): boolean {
+  function visit(previous = new Map<number, Candidate>): boolean
     poll()
-    if (stats.nodes >= maxNodes) throw new SearchLimit('maxNodes')
+    throw new SearchLimit('maxNodes') if stats.nodes >= maxNodes
     stats.nodes++
-    if (placed.size is poly.facets.length) {
+    if placed.size is poly.facets#
       stats.completeTrees++
-      const faces = [...placed.values()]
-      if (options.pruneOverlaps is false)
-        for (let i = 0; i < faces.length; i++) {
-          for (let j = 0; j < i; j++) if (interiorOverlap(faces[i], faces[j], eps, poll, overlapMethod, overlapStats)) return false
-        }
+      faces := [...placed.values()]
+      if options.pruneOverlaps is false
+        for i of [0..<faces#]
+          for j of [0..<i] when interiorOverlap faces[i], faces[j], eps, poll, overlapMethod, overlapStats
+            return false
       stats.solutions++
-      if (not witnessTree) {
+      unless witnessTree
         witnessTree = [...tree]
-        witnessPlacements = faces.sort((a, b) => a.facet - b.facet)
-      }
-      return options.stopAfterFirst !== false
-    }
-    const cache = new Map<number, Candidate>()
-    const frontier: number[] = []
-    for (let id = 0; id < poly.ridges.length; id++) {
-      const [a, b] = poly.ridges[id].facets
-      if (not excluded.has(id) and placed.has(a) !== placed.has(b)) {
-        frontier.push(id)
-        if (previous.has(id)) cache.set(id, previous.get(id)!)
-      }
-    }
-    const blocked: number[] = []
+        witnessPlacements = faces.sort (a, b) => a.facet - b.facet
+      return options.stopAfterFirst is not false
+    cache := new Map<number, Candidate>
+    frontier: number[] := []
+    for id of [0..<poly.ridges#]
+      [a, b] := poly.ridges[id].facets
+      if not excluded.has(id) and placed.has(a) is not placed.has b
+        frontier.push id
+        cache.set id, previous.get(id)! if previous.has id
+    blocked: number[] := []
     // Let easy first descents finish without checking every possible attachment.
-    const checkForward = forwardCheck is true or forwardCheck is 'auto' and stats.nodes > 2 * poly.facets.length
-    try {
-      const initial = graph()
-      if (not initial.connected) { stats.disconnectedPrunes++; return false; }
-      if (checkForward)
-        for (const id of frontier) if (not viable(id, cache)) {
-          excluded.add(id); blocked.push(id); cache.delete(id)
+    checkForward := forwardCheck is true or forwardCheck is 'auto' and stats.nodes > 2 * poly.facets#
+    try
+      initial := graph()
+      unless initial.connected
+        stats.disconnectedPrunes++
+        return false
+
+      if checkForward
+        for id of frontier when not viable id, cache
+          excluded.add(id); blocked.push(id); cache.delete id
           stats.overlapPrunes++; searchStats.blockedEdges++
-        }
-      const remaining = blocked.length ? graph() : initial
-      if (not remaining.connected) { stats.disconnectedPrunes++; return false; }
-      const viableFrontier = frontier.filter((id) => not excluded.has(id))
-      if (not viableFrontier.length) return false
-      const forced = forceBridges ? viableFrontier.find((id) => remaining.bridges.has(id)) : undefined
-      const id = forced ?? choose(viableFrontier, remaining.adjacency)
-      if (forced !== undefined) searchStats.forcedEdges++
-      const child = candidate(id, cache).placement
-      const overlaps = not checkForward and options.pruneOverlaps !== false and not viable(id, cache)
-      if (overlaps) { stats.overlapPrunes++; } else {
-        placed.set(child.facet, child); placementStack.push(child); tree.push(id)
+      remaining := blocked# ? graph() : initial
+      unless remaining.connected
+        stats.disconnectedPrunes++
+        return false
+
+      viableFrontier := frontier.filter (id) => not excluded.has id
+      return false unless viableFrontier#
+      forced := forceBridges ? viableFrontier.find(remaining.bridges.has(.)) : undefined
+      id := forced ?? choose viableFrontier, remaining.adjacency
+      searchStats.forcedEdges++ if forced is not undefined
+      child := candidate(id, cache).placement
+      overlaps := not checkForward and options.pruneOverlaps is not false and not viable id, cache
+      if overlaps
+        stats.overlapPrunes++
+      else
+        placed.set(child.facet, child); placementStack.push(child); tree.push id
         let stop: boolean
-        try { stop = visit(cache); } finally { tree.pop(); placementStack.pop(); placed.delete(child.facet); }
-        if (stop) return true
-      }
-      if (forced !== undefined) return false
-      excluded.add(id)
-      try { return visit(cache); } finally { excluded.delete(id); }
-    } finally {
-      for (const id of blocked) excluded.delete(id)
-    }
-  }
+        try
+          stop = visit cache
+        finally
+          tree.pop()
+          placementStack.pop()
+          placed.delete child.facet
+
+        return true if stop
+      return false if forced is not undefined
+      excluded.add id
+      try
+        visit cache
+      finally
+        excluded.delete id
+
+    finally
+      for (id of blocked) excluded.delete id
 
   let termination: SolveResult['termination']
-  try { termination = visit() ? 'solution' : 'exhausted'; } catch (error) {
-    if (not (error instanceof SearchLimit)) throw error
+  try
+    termination = visit() ? 'solution' : 'exhausted'
+  catch (error)
+    throw error unless (error instanceof SearchLimit)
     termination = error.reason
-  }
   stats.elapsedMs = performance.now() - start
-  return {
-    status: witnessTree ? 'found' : termination is 'exhausted' ? 'no-unfolding' : 'inconclusive',
-    termination, exhaustive: termination is 'exhausted', numerical: true, overlapTolerance: eps, overlapMethod, overlapStats, searchOptions, searchStats,
+  {
+    status: witnessTree ? 'found' : termination is 'exhausted' ? 'no-unfolding' : 'inconclusive'
+    termination, exhaustive: termination is 'exhausted', numerical: true, overlapTolerance: eps, overlapMethod, overlapStats, searchOptions, searchStats
     tree: witnessTree, placements: witnessPlacements, stats
   }
-}

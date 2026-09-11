@@ -1,203 +1,218 @@
-import {dot, mean, sub, mul, solveLinear, combinations} from './linalg.civet'
-import type {Vector} from './linalg.civet'
-import type {Placement} from './unfold.civet'
+{dot, mean, sub, mul, solveLinear, combinations} from ./linalg.civet
+type {Vector} from ./linalg.civet
+type {Placement} from ./unfold.civet
 
 // Two-phase tableau simplex: maximize c.x, A.x <= b, x >= 0.
 // Bland's rule prevents cycling on degenerate (especially touching) inputs.
-export function linearProgram(A: number[][], b: number[], c: number[], poll: () => void): {x: number[]; dual: number[]} | null {
-  return tableauProgram(b.length, c.length, (t) => {
-    for (let i = 0; i < b.length; i++) {
-      for (let j = 0; j < c.length; j++) t[i][j] = A[i][j];
-      t[i][c.length + 1] = b[i];
-    }
-    for (let j = 0; j < c.length; j++) t[b.length][j] = -c[j];
-  }, poll)
-}
+export function linearProgram(A: number[][], b: number[], c: number[], poll: => void): {x: number[]; dual: number[]} | null
+  tableauProgram b#, c#, (t) =>
+    for i of [0..<b#]
+      for (j of [0..<c#]) t[i][j] = A[i][j]
+      t[i][c# + 1] = b[i]
+    for (j of [0..<c#]) t[b#][j] = -c[j];
+  , poll
 
-interface LPWorkspace {tableau: Float64Array[]; basic: number[]; nonbasic: number[];}
-const workspaces: LPWorkspace[] = []
+interface LPWorkspace
+  tableau: Float64Array[]
+  basic: number[]
+  nonbasic: number[]
 
-function tableauProgram(m: number, n: number, initialize: (t: Float64Array[]) => void, poll: () => void): {x: number[]; dual: number[]} | null {
+workspaces: LPWorkspace[] := []
+
+function tableauProgram(m: number, n: number, initialize: (t: Float64Array[]) => void, poll: => void): {x: number[]; dual: number[]} | null
   // A workspace belongs to this call until finally: poll may throw or even run
   // another LP. Returned solutions never alias these reusable buffers.
-  const workspace = workspaces.pop() ?? {tableau: [], basic: [], nonbasic: []}
-  const {tableau: t, basic, nonbasic} = workspace
-  try {
-    for (let i = 0; i < m + 2; i++) {
-      if (not t[i] or t[i].length < n + 2) { t[i] = new Float64Array(n + 2); }
-      else { t[i].fill(0, 0, n + 2); }
-    }
-    basic.length = m; nonbasic.length = n + 1
-    for (let i = 0; i < m; i++) { basic[i] = n + i; t[i][n] = -1; }
-    for (let j = 0; j <= n; j++) nonbasic[j] = j is n ? -1 : j
-    t[m + 1][n] = 1
-    initialize(t)
-    return simplexTableau(t, basic, nonbasic, m, n, poll)
-  } finally {
-    if (workspaces.length < 2) workspaces.push(workspace)
-  }
-}
+  workspace := workspaces.pop() ?? tableau: [], basic: [], nonbasic: []
+  {tableau: t, basic, nonbasic} := workspace
+  try
+    for i of [0..<m + 2]
+      if not t[i] or t[i]# < n + 2
+        t[i] = new Float64Array n + 2
 
-function simplexTableau(t: Float64Array[], basic: number[], nonbasic: number[], m: number, n: number, poll: () => void): {x: number[]; dual: number[]} | null {
-  const eps = 1e-11
-  function pivot(r: number, s: number): void {
-    const pivotRow = t[r], inv = 1 / pivotRow[s]
-    for (let i = 0; i < m + 2; i++) if (i !== r) {
-      const row = t[i], entry = row[s]
+      else
+        t[i].fill 0, 0, n + 2
+
+    basic# = m; nonbasic# = n + 1
+    for i of [0..<m]
+      basic[i] = n + i
+      t[i][n] = -1
+
+    for (j of [0..n]) nonbasic[j] = j is n ? -1 : j
+    t[m + 1][n] = 1
+    initialize t
+    simplexTableau t, basic, nonbasic, m, n, poll
+  finally
+    workspaces.push workspace if workspaces# < 2
+
+function simplexTableau(t: Float64Array[], basic: number[], nonbasic: number[], m: number, n: number, poll: => void): {x: number[]; dual: number[]} | null
+  eps := 1e-11
+
+  function pivot(r: number, s: number): void
+    pivotRow := t[r]; inv := 1 / pivotRow[s]
+    for i of [0..<m + 2] when i is not r
+      row := t[i]; entry := row[s]
       // Keep the original arithmetic order while avoiding repeated row lookups
       // and the column test inside the hot loop.
-      for (let j = 0; j < s; j++) row[j] -= pivotRow[j] * entry * inv
-      for (let j = s + 1; j < n + 2; j++) row[j] -= pivotRow[j] * entry * inv
-    }
-    for (let j = 0; j < n + 2; j++) if (j !== s) pivotRow[j] *= inv
-    for (let i = 0; i < m + 2; i++) if (i !== r) t[i][s] *= -inv
+      for (j of [0..<s]) row[j] -= pivotRow[j] * entry * inv
+      for (j of [s + 1..<n + 2]) row[j] -= pivotRow[j] * entry * inv
+    for j of [0..<n + 2] when j is not s
+      pivotRow[j] *= inv
+    for i of [0..<m + 2] when i is not r
+      t[i][s] *= -inv
     t[r][s] = inv
     [basic[r], nonbasic[s]] = [nonbasic[s], basic[r]]
-  }
-  function phase(row: number): boolean {
-    for (let iteration = 0; iteration < 10000; iteration++) {
-      if (iteration % 32 is 0) poll()
-      let s = -1
-      for (let j = 0; j <= n; j++) {
-        if (row is m and nonbasic[j] is -1) continue
-        if (t[row][j] < -eps and (s < 0 or nonbasic[j] < nonbasic[s])) s = j
-      }
-      if (s < 0) return true
-      let r = -1
-      for (let i = 0; i < m; i++) if (t[i][s] > eps) {
-        const delta = r < 0 ? -Infinity : t[i][n + 1] / t[i][s] - t[r][n + 1] / t[r][s]
-        if (r < 0 or delta < -eps or Math.abs(delta) <= eps and basic[i] < basic[r]) r = i
-      }
-      if (r < 0) return false
-      pivot(r, s)
-    }
-    return false // Numerical failure: caller falls back, never declares separation.
-  }
-  let r = 0
-  for (let i = 1; i < m; i++) if (t[i][n + 1] < t[r][n + 1]) r = i
-  if (t[r][n + 1] < -eps) {
-    pivot(r, n)
-    if (not phase(m + 1) or Math.abs(t[m + 1][n + 1]) > eps) return null
-    r = basic.indexOf(-1)
-    if (r >= 0) {
-      let s = -1
-      for (let j = 0; j <= n; j++) if (Math.abs(t[r][j]) > eps and (s < 0 or nonbasic[j] < nonbasic[s])) s = j
-      if (s >= 0) pivot(r, s)
-    }
-  }
-  if (not phase(m)) return null
-  const x = Array(n).fill(0) as number[]
-  for (let i = 0; i < m; i++) if (basic[i] >= 0 and basic[i] < n) x[basic[i]] = t[i][n + 1]
-  const dual = Array(m).fill(0) as number[]
-  for (let j = 0; j <= n; j++) if (nonbasic[j] >= n) dual[nonbasic[j] - n] = t[m][j]
-  return x.every(Number.isFinite) ? {x, dual} : null
-}
+
+  function phase(row: number): boolean
+    for iteration of [0..<10000]
+      poll() if iteration % 32 is 0
+      s .= -1
+      for j of [0..n]
+        continue if row is m and nonbasic[j] is -1
+        s = j if t[row][j] < -eps and (s < 0 or nonbasic[j] < nonbasic[s])
+      return true if s < 0
+      r .= -1
+      for i of [0..<m] when t[i][s] > eps
+        delta := r < 0 ? -Infinity : t[i][n + 1] / t[i][s] - t[r][n + 1] / t[r][s]
+        r = i if r < 0 or delta < -eps or Math.abs(delta) <= eps and basic[i] < basic[r]
+      return false if r < 0
+      pivot r, s
+    false // Numerical failure: caller falls back, never declares separation.
+  r .= 0
+  for i of [1..<m] when t[i][n + 1] < t[r][n + 1]
+    r = i
+  if t[r][n + 1] < -eps
+    pivot r, n
+    return null if not phase(m + 1) or Math.abs(t[m + 1][n + 1]) > eps
+    r = basic.indexOf -1
+    if r >= 0
+      s .= -1
+      for j of [0..n] when Math.abs(t[r][j]) > eps and (s < 0 or nonbasic[j] < nonbasic[s])
+        s = j
+      pivot r, s if s >= 0
+  return null unless phase m
+  x := Array(n).fill(0) as number[]
+  for i of [0..<m] when basic[i] >= 0 and basic[i] < n
+    x[basic[i]] = t[i][n + 1]
+  dual := Array(m).fill(0) as number[]
+  for j of [0..n] when nonbasic[j] >= n
+    dual[nonbasic[j] - n] = t[m][j]
+  x.every(Number.isFinite) ? {x, dual} : null
 
 // alpha_i = u_i + epsilon, beta_j = v_j + epsilon.
 // A positive epsilon gives a common relative-interior point for full-dimensional
 // bodies, including nonsimplicial bodies and redundant input vertices.
-export function primalWitness(a: Placement, b: Placement, poll: () => void): {point: Vector | null; direction: Vector} | null {
-  const v = a.coordinates, w = b.coordinates, n = v.length + w.length + 1
-  const A: number[][] = [], rhs: number[] = []
-  function equality(row: number[], value: number): void { A.push(row, row.map((x) => -x)); rhs.push(value, -value); }
-  for (let j = 0; j < a.min.length; j++) {
-    const row = [...v.map((p) => p[j]), ...w.map((p) => -p[j])]
-    row.push(row.reduce((s, x) => s + x, 0)); equality(row, 0)
-  }
-  equality([...v.map(=> 1), ...w.map(=> 0), v.length], 1)
-  equality([...v.map(=> 0), ...w.map(=> 1), w.length], 1)
-  const c = Array(n).fill(0) as number[]; c[n - 1] = 1
-  const result = linearProgram(A, rhs, c, poll)
-  if (not result) return null
-  const {x, dual} = result
-  const point = x[n - 1] > 1e-11 ? v[0].map((_, j) => v.reduce((s, p, i) => s + (x[i] + x[n - 1]) * p[j], 0)) : null
-  return {point, direction: v[0].map((_, j) => dual[2 * j + 1] - dual[2 * j])}
-}
+export function primalWitness(a: Placement, b: Placement, poll: => void): {point: Vector | null; direction: Vector} | null
+  v := a.coordinates; w := b.coordinates; n := v# + w# + 1
+  A: number[][] := []; rhs: number[] := []
 
-function support(points: Vector[], direction: Vector): Vector {
-  let best = points[0], value = dot(best, direction)
-  for (let i = 1; i < points.length; i++) { const next = dot(points[i], direction); if (next > value) { value = next; best = points[i]; } }
-  return best
-}
+  function equality(row: number[], value: number): void
+    A.push row, row.map (x) => -x
+    rhs.push value, -value
+
+  for j of [0..<a.min#]
+    row := [...v.map((p) => p[j]), ...w.map (p) => -p[j]]
+    row.push(row.reduce (s, x) => s + x, 0); equality row, 0
+  equality [...v.map(=> 1), ...w.map(=> 0), v#], 1
+  equality [...v.map(=> 0), ...w.map(=> 1), w#], 1
+  c := Array(n).fill(0) as number[]; c[n - 1] = 1
+  result := linearProgram A, rhs, c, poll
+  return null unless result
+  {x, dual} := result
+  point := x[n - 1] > 1e-11 ? v[0].map((_, j) => v.reduce (s, p, i) => s + (x[i] + x[n - 1]) * p[j], 0) : null
+  {point, direction: v[0].map (_, j) => dual[2 * j + 1] - dual[2 * j]}
+
+function support(points: Vector[], direction: Vector): Vector
+  best .= points[0]; value .= dot best, direction
+  for i of [1..<points#]
+    next := dot points[i], direction
+    if next > value
+      value = next
+      best = points[i]
+
+  best
 
 // A common ball of radius tolerance would put a radius-2*tolerance ball in
 // A-B. A support value below 2*tolerance therefore rules it out.
-export function supportSeparates(a: Placement, b: Placement, direction: Vector, tolerance: number): boolean {
-  const length = Math.sqrt(dot(direction, direction))
-  if (length < 1e-12) return false
-  const axis = mul(direction, 1 / length)
-  return dot(sub(support(a.coordinates, axis), support(b.coordinates, mul(axis, -1))), axis) < 2 * tolerance - 1e-11
-}
+export function supportSeparates(a: Placement, b: Placement, direction: Vector, tolerance: number): boolean
+  length := Math.sqrt dot direction, direction
+  return false if length < 1e-12
+  axis := mul direction, 1 / length
+  dot(sub(support(a.coordinates, axis), support b.coordinates, mul axis, -1), axis) < 2 * tolerance - 1e-11
 
 // Dimension-independent GJK distance iteration. The closest point of a simplex
 // is found by enumerating its faces and projecting onto their affine hulls.
 // Return only a verified separating direction; stagnation/contact/intersection
 // go to the primal LP, since zero distance alone does not imply interior overlap.
-export function gjkSeparated(a: Placement, b: Placement, tolerance: number, poll: () => void): boolean {
-  const k = a.min.length
-  let direction = sub(mean(b.coordinates), mean(a.coordinates))
-  if (dot(direction, direction) < 1e-24) direction = Array.from({length: k}, (_, j) => Number(j is 0))
-  let simplex: Vector[] = []
-  for (let iteration = 0; iteration < 64; iteration++) {
+export function gjkSeparated(a: Placement, b: Placement, tolerance: number, poll: => void): boolean
+  k := a.min#
+  direction .= sub mean(b.coordinates), mean a.coordinates
+  if (dot(direction, direction) < 1e-24) direction = Array.from length: k, (_, j) => Number j is 0
+  simplex: Vector[] .= []
+  for iteration of [0..<64]
     poll()
-    const length = Math.sqrt(dot(direction, direction))
-    if (length < 1e-12) return false
-    direction = mul(direction, 1 / length)
-    const p = sub(support(a.coordinates, direction), support(b.coordinates, mul(direction, -1)))
+    length := Math.sqrt dot direction, direction
+    return false if length < 1e-12
+    direction = mul direction, 1 / length
+    p := sub support(a.coordinates, direction), support b.coordinates, mul direction, -1
     // Direct support evaluation is a separation certificate, independent of
     // any numerical errors in the nearest-simplex calculation.
-    if (dot(p, direction) < 2 * tolerance - 1e-11) return true
-    if (simplex.some((q) => dot(sub(p, q), sub(p, q)) < 1e-24)) return false
-    simplex.push(p)
-    let best: Vector | null = null, active: Vector[] = [], bestNorm = Infinity
-    let faces = 0
-    for (let size = 1; size <= Math.min(k + 1, simplex.length); size++) {
-      for (const ids of combinations(simplex.length, size)) {
-        if (faces++ % 256 is 0) poll()
-        const points = ids.map((i) => simplex[i]), base = points[0]
-        const edges = points.slice(1).map((q) => sub(q, base))
-        const weights = size is 1 ? [] : solveLinear(edges.map((e) => edges.map((f) => dot(e, f))), edges.map((e) => -dot(e, base)), 1e-13)
-        if (not weights or weights.some((x) => x < -1e-12) or weights.reduce((s, x) => s + x, 0) > 1 + 1e-12) continue
-        const q = base.map((x, j) => x + edges.reduce((s, e, i) => s + weights[i] * e[j], 0))
-        const value = dot(q, q)
-        if (value < bestNorm) { bestNorm = value; best = q; active = points; }
-      }
-    }
-    if (not best) return false
-    simplex = active; direction = mul(best, -1)
-  }
-  return false
-}
+    return true if dot(p, direction) < 2 * tolerance - 1e-11
+    return false if simplex.some (q) => dot(sub(p, q), sub p, q) < 1e-24
+    simplex.push p
+    best: Vector | null .= null; active: Vector[] .= []; bestNorm .= Infinity
+    faces .= 0
+    for size of [1..Math.min k + 1, simplex#]
+      for ids of combinations simplex#, size
+        poll() if faces++ % 256 is 0
+        points := ids.map((i) => simplex[i]); base := points[0]
+        edges := points[>=1].map sub ., base
+        weights := size is 1 ? [] : solveLinear edges.map((e) => edges.map(dot e, .)), edges.map((e) => -dot e, base), 1e-13
+        continue if not weights or weights.some((x) => x < -1e-12) or weights.reduce((s, x) => s + x, 0) > 1 + 1e-12
+        q := base.map (x, j) => x + edges.reduce (s, e, i) => s + weights[i] * e[j], 0
+        value := dot q, q
+        if value < bestNorm
+          bestNorm = value
+          best = q
+          active = points
+
+    return false unless best
+    simplex = active; direction = mul best, -1
+  false
 
 // Halfspace formulation (previously handled only by active-set enumeration).
 // Split unrestricted x and t into positive and negative parts for the simplex solver.
-export function halfspaceLP(a: Placement, b: Placement, tolerance: number, poll: () => void): {point: Vector; separated: boolean} | null {
-  const k = a.min.length, m = a.halfspaces.length + b.halfspaces.length, n = 2 * (k + 1)
-  const plane = (i: number) => i < a.halfspaces.length ? a.halfspaces[i] : b.halfspaces[i - a.halfspaces.length]
+export function halfspaceLP(a: Placement, b: Placement, tolerance: number, poll: => void): {point: Vector; separated: boolean} | null
+  k := a.min#; m := a.halfspaces# + b.halfspaces#; n := 2 * (k + 1)
+
+  function plane(i: number)
+    i < a.halfspaces# ? a.halfspaces[i] : b.halfspaces[i - a.halfspaces#]
   // Populate the solver's tableau directly, without constructing and copying A.
-  const result = tableauProgram(m, n, (t) => {
-    for (let i = 0; i < m; i++) {
-      const p = plane(i), row = t[i];
-      for (let j = 0; j < k; j++) { row[j] = p.normal[j]; row[k + 1 + j] = -p.normal[j]; }
-      row[k] = 1; row[2 * k + 1] = -1; row[n + 1] = p.offset;
-    }
+  result := tableauProgram m, n, (t) =>
+    for i of [0..<m]
+      p := plane(i); row := t[i]
+      for j of [0..<k]
+        row[j] = p.normal[j]
+        row[k + 1 + j] = -p.normal[j]
+
+      row[k] = 1; row[2 * k + 1] = -1; row[n + 1] = p.offset
     t[m][k] = -1; t[m][2 * k + 1] = 1;
-  }, poll)
-  if (not result) return null
-  const point = a.min.map((_, j) => result.x[j] - result.x[k + 1 + j])
+  , poll
+  return null unless result
+  point := a.min.map (_, j) => result.x[j] - result.x[k + 1 + j]
   // Verify a dual upper bound independently of solver feasibility tolerances.
   // Normalize nonnegative multipliers so the coefficient of t is exactly one.
-  const weights = result.dual
-  let sum = 0
-  for (let i = 0; i < m; i++) { weights[i] = Math.max(0, weights[i]); sum += weights[i]; }
-  if (not (sum > 1e-12 and Number.isFinite(sum))) return {point, separated: false}
-  const residual = Array(k).fill(0) as Vector
-  let bound = 0
-  for (let i = 0; i < m; i++) {
-    const weight = weights[i] / sum, p = plane(i)
+  weights := result.dual
+  sum .= 0
+  for i of [0..<m]
+    weights[i] = Math.max 0, weights[i]
+    sum += weights[i]
+
+  return {point, separated: false} unless (sum > 1e-12 and Number.isFinite sum)
+  residual := Array(k).fill(0) as Vector
+  bound .= 0
+  for i of [0..<m]
+    weight := weights[i] / sum; p := plane i
     bound += weight * p.offset
-    for (let j = 0; j < k; j++) residual[j] += weight * p.normal[j]
-  }
-  const upper = bound - residual.reduce((s, r, j) => s + r * (r >= 0 ? Math.max(a.min[j], b.min[j]) : Math.min(a.max[j], b.max[j])), 0)
-  return {point, separated: upper < tolerance - 1e-11}
-}
+    for (j of [0..<k]) residual[j] += weight * p.normal[j]
+  upper := bound - residual.reduce (s, r, j) => s + r * (r >= 0 ? Math.max(a.min[j], b.min[j]) : Math.min a.max[j], b.max[j]), 0
+  {point, separated: upper < tolerance - 1e-11}

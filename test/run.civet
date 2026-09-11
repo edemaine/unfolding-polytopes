@@ -1,1170 +1,1133 @@
-import assert from 'node:assert/strict'
-import {linearProgram} from '../src/primal.civet'
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync} from 'node:fs'
-import {hostname, tmpdir} from 'node:os'
-import {join, resolve} from 'node:path'
-import {spawnSync} from 'node:child_process'
-import {convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from '../src/index.civet'
-import {affineBasis, apply, combinations, dot, mul, norm, sub} from '../src/linalg.civet'
-import type {Vector} from '../src/linalg.civet'
-import type {Placement, Polytope, OverlapMethod} from '../src/index.civet'
-import {formatSummary, summarizeResults} from '../src/summary.civet'
-import {retryCoverage} from '../src/retry-coverage.civet'
-import {formatTimings, summarizeTimings} from '../src/timings.civet'
-import {trialJSON} from '../src/storage.civet'
-import {compactResults} from '../src/compact.civet'
-import {generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from '../src/jobs.civet'
-import type {GeneratorSpec} from '../src/jobs.civet'
+assert from node:assert/strict
+{linearProgram} from ../src/primal.civet
+{existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync} from node:fs
+{hostname, tmpdir} from node:os
+{join, resolve} from node:path
+{spawnSync} from node:child_process
+{convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from ../src/index.civet
+{affineBasis, apply, combinations, dot, mul, norm, sub} from ../src/linalg.civet
+type {Vector} from ../src/linalg.civet
+type {Placement, Polytope, OverlapMethod} from ../src/index.civet
+{formatSummary, summarizeResults} from ../src/summary.civet
+{retryCoverage} from ../src/retry-coverage.civet
+{formatTimings, summarizeTimings} from ../src/timings.civet
+{trialJSON} from ../src/storage.civet
+{compactResults} from ../src/compact.civet
+{generatedInput, missingTasks, nextSearchSeed, trialName, withSeedLock} from ../src/jobs.civet
+type {GeneratorSpec} from ../src/jobs.civet
 
-let passed = 0
-function test(name: string, run: () => void): void {
-  const start = performance.now()
+passed .= 0
+
+function test(name: string, run: => void): void
+  start := performance.now()
   run(); passed++
-  console.log(`ok ${passed} - ${name} (${Math.round(performance.now() - start)}ms)`)
-}
-const close = (a: number, b: number, eps = 1e-7): void => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`)
-const near = (a: Vector, b: Vector): void => { assert.equal(a.length, b.length); a.forEach((x, i) => close(x, b[i])); }
-const cli = (args: string[]): ReturnType<typeof spawnSync> => spawnSync(process.execPath, ['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args], {encoding: 'utf8'})
+  console.log `ok ${passed} - ${name} (${Math.round performance.now() - start}ms)`
+
+function close(a: number, b: number, eps = 1e-7): void
+  assert.ok Math.abs(a - b) < eps, `${a} != ${b}`
+
+function near(a: Vector, b: Vector): void
+  assert.equal a#, b#
+  a.forEach (x, i) => close x, b[i]
+
+function cli(args: string[]): ReturnType<typeof spawnSync>
+  spawnSync process.execPath, ['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args], encoding: 'utf8'
 
 // Independent planar separating-axis test, for checking both LP and solver.
-function planarOverlap(a: Vector[], b: Vector[]): boolean {
-  const order = (p: Vector[]): Vector[] => {
-    const c = p[0].map((_, j) => p.reduce((s, v) => s + v[j] / p.length, 0))
-    return [...p].sort((x, y) => Math.atan2(x[1] - c[1], x[0] - c[0]) - Math.atan2(y[1] - c[1], y[0] - c[0]))
-  }
-  for (const polygon of [order(a), order(b)]) {
-    for (let i = 0; i < polygon.length; i++) {
-      const edge = sub(polygon[(i + 1) % polygon.length], polygon[i])
-      const axis = mul([-edge[1], edge[0]], 1 / norm(edge))
-      const pa = a.map((p) => dot(p, axis))
-      const pb = b.map((p) => dot(p, axis))
-      if (Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb)) <= 1e-7) return false
-    }
-  }
-  return true
-}
+function planarOverlap(a: Vector[], b: Vector[]): boolean
+  function order(p: Vector[]): Vector[]
+    c := p[0].map (_, j) => p.reduce (s, v) => s + v[j] / p#, 0
+    [...p].sort (x, y) => Math.atan2(x[1] - c[1], x[0] - c[0]) - Math.atan2 y[1] - c[1], y[0] - c[0]
+  for polygon of [order(a), order b]
+    for i of [0..<polygon#]
+      edge := sub polygon[(i + 1) % polygon#], polygon[i]
+      axis := mul [-edge[1], edge[0]], 1 / norm edge
+      pa := a.map dot ., axis
+      pb := b.map dot ., axis
+      return false if Math.min(Math.max(...pa), Math.max ...pb) - Math.max(Math.min(...pa), Math.min ...pb) <= 1e-7
+  true
 
-function body(points: Vector[]): Placement {
-  const d = points[0].length
-  const min = points[0].map((_, j) => Math.min(...points.map((p) => p[j])))
-  const max = points[0].map((_, j) => Math.max(...points.map((p) => p[j])))
-  const poly = d >= 2 ? convexHull(points) : null
-  const halfspaces = poly ? poly.facets.map((f) => ({normal: f.normal, offset: f.offset * poly.scale + dot(f.normal, poly.center)})) : [{normal: [-1], offset: -min[0]}, {normal: [1], offset: max[0]}]
-  return {facet: 0, linear: [], translation: [], vertices: points.map((_, i) => i), coordinates: points, halfspaces, min, max}
-}
+function body(points: Vector[]): Placement
+  d := points[0]#
+  min := points[0].map (_, j) => Math.min ...points.map (p) => p[j]
+  max := points[0].map (_, j) => Math.max ...points.map (p) => p[j]
+  poly := d >= 2 ? convexHull(points) : null
+  halfspaces := poly ? poly.facets.map((f) => normal: f.normal, offset: f.offset * poly.scale + dot f.normal, poly.center) : [normal: [-1], offset: -min[0], {normal: [1], offset: max[0]}]
+  {facet: 0, linear: [], translation: [], vertices: points.map((_, i) => i), coordinates: points, halfspaces, min, max}
 
-function verify(poly: Polytope, tree: number[]): void {
-  const faces = developTree(poly, tree)
-  for (const face of faces) {
-    for (let i = 0; i < face.vertices.length; i++) {
-      for (let j = 0; j < i; j++) close(norm(sub(face.coordinates[i], face.coordinates[j])), norm(sub(poly.points[face.vertices[i]], poly.points[face.vertices[j]])))
-      for (const h of face.halfspaces) assert.ok(dot(h.normal, face.coordinates[i]) <= h.offset + 1e-7)
-    }
-    for (let i = 0; i < face.linear.length; i++) {
-      for (let j = 0; j < face.linear.length; j++) close(dot(face.linear[i], face.linear[j]), Number(i is j))
-    }
-  }
-  for (const id of tree) {
-    const ridge = poly.ridges[id]
-    const [a, b] = ridge.facets.map((f) => faces[f])
-    for (const v of ridge.vertices) near(mapPoint(a, poly.points[v]), mapPoint(b, poly.points[v]))
-    near(apply(a.linear, ridge.inward[0]), mul(apply(b.linear, ridge.inward[1]), -1))
-  }
-  if (poly.dimension is 3)
-    for (let i = 0; i < faces.length; i++) {
-      for (let j = 0; j < i; j++) assert.equal(planarOverlap(faces[i].coordinates, faces[j].coordinates), false)
-    }
-}
+function verify(poly: Polytope, tree: number[]): void
+  faces := developTree poly, tree
+  for face of faces
+    for i of [0..<face.vertices#]
+      for (j of [0..<i]) close norm(sub face.coordinates[i], face.coordinates[j]), norm sub poly.points[face.vertices[i]], poly.points[face.vertices[j]]
+      for (h of face.halfspaces) assert.ok dot(h.normal, face.coordinates[i]) <= h.offset + 1e-7
+    for i of [0..<face.linear#]
+      for (j of [0..<face.linear#]) close dot(face.linear[i], face.linear[j]), Number i is j
+  for id of tree
+    ridge := poly.ridges[id]
+    [a, b] := ridge.facets.map (f) => faces[f]
+    for (v of ridge.vertices) near mapPoint(a, poly.points[v]), mapPoint b, poly.points[v]
+    near apply(a.linear, ridge.inward[0]), mul apply(b.linear, ridge.inward[1]), -1
+  if poly.dimension is 3
+    for i of [0..<faces#]
+      for (j of [0..<i]) assert.equal planarOverlap(faces[i].coordinates, faces[j].coordinates), false
 
-test('custom LP returns primal values and row multipliers', : void =>
-  for (const engine of [linearProgram]) {
-    const result = engine([[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], => {;});
-    assert.ok(result);
-    near(result.x, [2, 2]);
-    near(result.dual, [2, 1, 0]);
-    assert.equal(engine([[1], [-1]], [0, -1], [1], => {;}), null);
-  }
-)
+test 'custom LP returns primal values and row multipliers', : void =>
+  for engine of [linearProgram]
+    result := engine [[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], => return
+    assert.ok result
+    near result.x, [2, 2]
+    near result.dual, [2, 1, 0]
+    assert.equal engine([[1], [-1]], [0, -1], [1], => return), null
 
-test('LP workspaces tolerate resizing, nested calls, and interrupted solves', => {
-  const kept = linearProgram([[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], => {;})!;
-  const snapshot = structuredClone(kept);
-  for (const n of [8, 1, 12, 2, 1]) {
-    const A = Array.from({length: n}, (_, i) => Array.from({length: n}, (_, j) => Number(i is j)));
-    const limits = Array.from({length: n}, (_, i) => i + 1);
-    let polls = 0;
-    const result = linearProgram(A, limits, Array(n).fill(1), => {
-      polls++;
-      const nested = linearProgram([[1], [-1]], [5, -2], [1], => {;})!;
-      near(nested.x, [5]);
-    });
-    assert.ok(polls > 0);
-    near(result!.x, limits);
-    near(result!.dual, Array(n).fill(1));
-    assert.throws(=> linearProgram(A, limits, Array(n).fill(1), => { throw new Error('interrupt LP'); }), /interrupt LP/);
-    assert.equal(linearProgram([[1], [-1]], [0, -1], [1], => {;}), null);
-    assert.equal(linearProgram([[-1]], [0], [1], => {;}), null);
-    near(linearProgram([[1]], [3], [1], => {;})!.x, [3]);
-  }
-  assert.deepEqual(kept, snapshot);
-})
 
-test('primal overlap backends: contact, thin overlaps, random pairs, and trees', : void =>
-  const methods: OverlapMethod[] = ['primal-lp', 'gjk-lp', 'dual-lp'];
-  for (let k = 1; k <= 4; k++) {
-    const points = k is 1 ? [[-1], [1]] : hypercube(k);
-    const a = body(points);
-    for (const gap of [-0.1, -1e-6, -1e-9, 0, 1e-9, 1e-6, 0.1]) {
-      const b = body(points.map((p) => p.map((x, j) => x + (j is 0 ? 2 + gap : 0))));
-      for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap(a, b, 1e-8, undefined, 'enumerate'), `${method}, k=${k}, gap=${gap}`);
-    }
-  }
-  for (let seed = 0; seed < 100; seed++) {
-    const a = body(randomPoints(2, 6, seed, 'sphere'));
-    const b = body(randomPoints(2, 7, seed + 200, 'sphere').map((p) => p.map((x, j) => x + (j is 0 ? 1 : 0))));
-    for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), planarOverlap(a.coordinates, b.coordinates), `${method}, seed=${seed}`);
-  }
-  for (const k of [2, 3, 4, 5]) {
-    const a = body(simplex(k));
-    for (const shift of [0.1, 0.7, 1.4]) {
-      const b = body(simplex(k).map((p) => p.map((x, j) => x + (j is 0 ? shift : 0))));
-      for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap(a, b, 1e-8, undefined, 'enumerate'));
-    }
-  }
-  const horizontal = body([[-3, -0.2], [3, -0.2], [3, 0.2], [-3, 0.2]]);
-  const vertical = body([[1, -1], [1.2, -1], [1.2, 5], [1, 5]]);
-  for (const method of methods) {
-    const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
-    assert.equal(interiorOverlap(horizontal, vertical, 1e-8, undefined, method, stats), true);
-    assert.equal(stats.primalWitnesses, 1);
-    assert.throws(=> interiorOverlap(horizontal, vertical, 1e-8, => { throw new Error('poll'); }, method), /poll/);
-  }
+test 'LP workspaces tolerate resizing, nested calls, and interrupted solves', =>
+  kept := linearProgram([[1, 1], [1, 0], [0, 1]], [4, 2, 3], [3, 2], => return)!
+  snapshot := structuredClone kept
+  for n of [8, 1, 12, 2, 1]
+    A := Array.from length: n, (_, i) => Array.from length: n, (_, j) => Number i is j
+    limits := Array.from length: n, (_, i) => i + 1
+    polls .= 0
+    result := linearProgram A, limits, Array(n).fill(1), =>
+      polls++
+      nested := linearProgram([[1], [-1]], [5, -2], [1], => return)!
+      near nested.x, [5];
+
+    assert.ok polls > 0
+    near result!.x, limits
+    near result!.dual, Array(n).fill 1
+    assert.throws => linearProgram(A, limits, Array(n).fill(1), =>
+      throw new Error 'interrupt LP'
+    ), /interrupt LP/
+    assert.equal linearProgram([[1], [-1]], [0, -1], [1], => return), null
+    assert.equal linearProgram([[-1]], [0], [1], => return), null
+    near linearProgram([[1]], [3], [1], => return)!.x, [3]
+  assert.deepEqual kept, snapshot;
+
+
+test 'primal overlap backends: contact, thin overlaps, random pairs, and trees', : void =>
+  methods: OverlapMethod[] := ['primal-lp', 'gjk-lp', 'dual-lp']
+  for k of [1..4]
+    points := k is 1 ? [[-1], [1]] : hypercube k
+    a := body points
+    for gap of [-0.1, -1e-6, -1e-9, 0, 1e-9, 1e-6, 0.1]
+      b := body points.map (p) => p.map (x, j) => x + (j is 0 ? 2 + gap : 0)
+      for (method of methods) assert.equal interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap(a, b, 1e-8, undefined, 'enumerate'), `${method}, k=${k}, gap=${gap}`
+  for seed of [0..<100]
+    a := body randomPoints 2, 6, seed, 'sphere'
+    b := body randomPoints(2, 7, seed + 200, 'sphere').map (p) => p.map (x, j) => x + (j is 0 ? 1 : 0)
+    for (method of methods) assert.equal interiorOverlap(a, b, 1e-8, undefined, method), planarOverlap(a.coordinates, b.coordinates), `${method}, seed=${seed}`
+  for k of [2, 3, 4, 5]
+    a := body simplex k
+    for shift of [0.1, 0.7, 1.4]
+      b := body simplex(k).map (p) => p.map (x, j) => x + (j is 0 ? shift : 0)
+      for (method of methods) assert.equal interiorOverlap(a, b, 1e-8, undefined, method), interiorOverlap a, b, 1e-8, undefined, 'enumerate'
+  horizontal := body [[-3, -0.2], [3, -0.2], [3, 0.2], [-3, 0.2]]
+  vertical := body [[1, -1], [1.2, -1], [1.2, 5], [1, 5]]
+  for method of methods
+    stats := calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0
+    assert.equal interiorOverlap(horizontal, vertical, 1e-8, undefined, method, stats), true
+    assert.equal stats.primalWitnesses, 1
+    assert.throws => interiorOverlap(horizontal, vertical, 1e-8, =>
+      throw new Error 'poll'
+    , method), /poll/
   // Max barycentric depth chooses ~(.909,.909), but the geometric optimum
   // is (.5,.5). A shallow primal witness must not hide a deeper intersection.
-  const wide = body([[0, 0], [10, 0], [10, 1], [0, 1]]);
-  const tall = body([[0, 0], [1, 0], [1, 10], [0, 10]]);
-  for (const method of methods) {
-    const stats = {calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0};
-    assert.equal(interiorOverlap(wide, tall, 0.2, undefined, method, stats), true);
-    if (not method.startsWith('dual-')) assert.equal(stats.fallbacks, 1);
-  }
+  wide := body [[0, 0], [10, 0], [10, 1], [0, 1]]
+  tall := body [[0, 0], [1, 0], [1, 10], [0, 10]]
+  for method of methods
+    stats := calls: 0, primalWitnesses: 0, supportSeparations: 0, fallbacks: 0
+    assert.equal interiorOverlap(wide, tall, 0.2, undefined, method, stats), true
+    assert.equal stats.fallbacks, 1 unless method.startsWith 'dual-'
   // A diagonal shared edge has overlapping AABBs; neither center lies inside.
-  const a = body([[0, 0], [2, 0], [0, 2]]), b = body([[2, 0], [0, 2], [2, 2]]);
-  for (const method of methods) assert.equal(interiorOverlap(a, b, 1e-8, undefined, method), false);
-  for (const points of [simplex(3), simplex(4), randomPoints(3, 6, 4, 'gaussian')]) {
-    const p = convexHull(points), reference = solve(p, {stopAfterFirst: false, overlapMethod: 'enumerate'});
-    for (const method of methods) {
-      const result = solve(p, {stopAfterFirst: false, overlapMethod: method});
-      assert.equal(result.stats.solutions, reference.stats.solutions);
-      assert.equal(result.stats.nodes, reference.stats.nodes);
-      assert.deepEqual(result.tree, reference.tree);
-    }
-  }
-)
+  a := body([[0, 0], [2, 0], [0, 2]]); b := body [[2, 0], [0, 2], [2, 2]]
+  for (method of methods) assert.equal interiorOverlap(a, b, 1e-8, undefined, method), false
+  for points of [simplex(3), simplex(4), randomPoints 3, 6, 4, 'gaussian']
+    p := convexHull(points); reference := solve p, stopAfterFirst: false, overlapMethod: 'enumerate'
+    for method of methods
+      result := solve p, stopAfterFirst: false, overlapMethod: method
+      assert.equal result.stats.solutions, reference.stats.solutions
+      assert.equal result.stats.nodes, reference.stats.nodes
+      assert.deepEqual result.tree, reference.tree
 
-test('incremental hull agrees with enumeration across dimensions and degeneracies', => {
-  function compare(points: Vector[]): void {
-    const old = convexHull(points, {method: 'enumerate'});
-    const next = convexHull(points, {method: 'incremental'});
-    assert.equal(next.hullMethod, 'incremental', next.hullFallback ?? 'Unexpected enumeration fallback');
-    assert.deepEqual(next.facets.map((f) => f.vertices), old.facets.map((f) => f.vertices));
-    assert.deepEqual(next.ridges.map((r) => ({facets: r.facets, vertices: r.vertices})), old.ridges.map((r) => ({facets: r.facets, vertices: r.vertices})));
-    for (let i = 0; i < old.facets.length; i++) {
-      near(next.facets[i].normal, old.facets[i].normal);
-      close(next.facets[i].offset, old.facets[i].offset);
-    }
-    const a = solve(old, {maxNodes: 80}), b = solve(next, {maxNodes: 80});
-    assert.equal(a.status, b.status);
-    assert.deepEqual(a.tree, b.tree);
-    assert.deepEqual({...a.stats, elapsedMs: 0}, {...b.stats, elapsedMs: 0});
-  }
-  for (let d = 2; d <= 6; d++) {
-    compare(simplex(d));
-    for (const distribution of ['sphere', 'ball', 'box', 'gaussian'] as const) {
-      for (let seed = 0; seed < 5; seed++) compare(randomPoints(d, d + 3, seed, distribution).map((p) => p.map((x, j) => x * (j is 0 and seed is 4 ? 0.01 : 1))));
-    }
-  }
-  for (let d = 2; d <= 4; d++) {
-    const cube = hypercube(d);
-    compare(cube); compare(crossPolytope(d));
-    compare([...cube].reverse());
-    compare([Array(d).fill(0), cube[0], ...cube, cube[0], cube[0].map((x, j) => j is 0 ? 0 : x)]);
-  }
-  compare(hypersimplex(4, 2)); compare(prism(simplex(3))); compare(pyramid(hypercube(3))); compare(cyclic(4, 8));
+
+test 'incremental hull agrees with enumeration across dimensions and degeneracies', =>
+  function compare(points: Vector[]): void
+    old := convexHull points, method: 'enumerate'
+    next := convexHull points, method: 'incremental'
+    assert.equal next.hullMethod, 'incremental', next.hullFallback ?? 'Unexpected enumeration fallback'
+    assert.deepEqual next.facets.map(.vertices), old.facets.map(.vertices)
+    assert.deepEqual next.ridges.map((r) => r.{facets, vertices}), old.ridges.map (r) => r.{facets, vertices}
+    for i of [0..<old.facets#]
+      near next.facets[i].normal, old.facets[i].normal
+      close next.facets[i].offset, old.facets[i].offset
+    a := solve(old, maxNodes: 80); b := solve next, maxNodes: 80
+    assert.equal a.status, b.status
+    assert.deepEqual a.tree, b.tree
+    assert.deepEqual {...a.stats, elapsedMs: 0}, {...b.stats, elapsedMs: 0}
+  for d of [2..6]
+    compare simplex d
+    for distribution of ['sphere', 'ball', 'box', 'gaussian'] as const
+      for (seed of [0..<5]) compare randomPoints(d, d + 3, seed, distribution).map (p) => p.map (x, j) => x * (j is 0 and seed is 4 ? 0.01 : 1)
+  for d of [2..4]
+    cube := hypercube d
+    compare(cube); compare crossPolytope d
+    compare [...cube].reverse()
+    compare [Array(d).fill(0), cube[0], ...cube, cube[0], cube[0].map (x, j) => j is 0 ? 0 : x]
+  compare(hypersimplex 4, 2); compare(prism simplex 3); compare(pyramid hypercube 3); compare cyclic 4, 8
   // Coplanar triangulation boundaries must merge into one nonsimplicial ridge.
-  compare(product(simplex(2), simplex(2)));
-  compare(prism(hypercube(3)).map((p) => p.map((x, j) => x + (j ? p[j - 1] * 0.3 : 0))));
-  const thin = [[0, 0], [1, 0], [0, 1.2e-9]];
-  const fallback = convexHull(thin, {method: 'incremental', maxCombinations: 4});
-  assert.equal(fallback.hullMethod, 'enumerate');
-  assert.match(fallback.hullFallback!, /orientation/);
-  assert.equal(fallback.hullCombinations, 4);
-  assert.deepEqual(fallback.facets, convexHull(thin, {method: 'enumerate'}).facets);
-  assert.throws(=> convexHull(thin, {method: 'incremental', maxCombinations: 3}), /budget exceeded/);
-  assert.throws(=> convexHull(simplex(3), {method: 'incremental', maxCombinations: 0}), /budget exceeded/);
-  assert.throws(=> convexHull(simplex(3), {method: 'incremental', maxCombinations: 4}), /budget exceeded/);
-})
+  compare product simplex(2), simplex 2
+  compare prism(hypercube 3).map (p) => p.map (x, j) => x + (j ? p[j - 1] * 0.3 : 0)
+  thin := [[0, 0], [1, 0], [0, 1.2e-9]]
+  fallback := convexHull thin, method: 'incremental', maxCombinations: 4
+  assert.equal fallback.hullMethod, 'enumerate'
+  assert.match fallback.hullFallback!, /orientation/
+  assert.equal fallback.hullCombinations, 4
+  assert.deepEqual fallback.facets, convexHull(thin, method: 'enumerate').facets
+  assert.throws => convexHull(thin, method: 'incremental', maxCombinations: 3), /budget exceeded/
+  assert.throws => convexHull(simplex(3), method: 'incremental', maxCombinations: 0), /budget exceeded/
+  assert.throws => convexHull(simplex(3), method: 'incremental', maxCombinations: 4), /budget exceeded/;
 
-test('hull combinatorics in dimensions 2 through 6', : void =>
-  for (let d = 2; d <= 6; d++) {
-    const p = convexHull(simplex(d));
-    assert.equal(p.facets.length, d + 1);
-    assert.equal(p.ridges.length, d * (d + 1) / 2);
-    assert.ok(p.facets.every((f) => f.vertices.length is d));
-  }
-  for (let d = 2; d <= 4; d++) {
-    const cube = convexHull(hypercube(d));
-    assert.equal(cube.facets.length, 2 * d);
-    assert.equal(cube.ridges.length, 2 * d * (d - 1));
-    assert.ok(cube.facets.every((f) => f.vertices.length is 2 ** (d - 1)));
-    assert.ok(cube.ridges.every((r) => r.vertices.length is 2 ** (d - 2)));
-    const cross = convexHull(crossPolytope(d));
-    assert.equal(cross.facets.length, 2 ** d);
-    assert.equal(cross.ridges.length, d * 2 ** (d - 1));
-  }
-)
 
-test('redundant points, translations, rescaling, and invalid input', => {
-  const points = hypercube(3);
-  const extra = [...points, [0, 0, 0], [...points[0]], [1, 0, 0], [1, 1, 0]];
-  const p = convexHull(extra);
-  assert.equal(p.facets.length, 6); assert.equal(p.ridges.length, 12);
-  for (const scale of [1e-8, 1, 1e8]) {
-    const transformed = convexHull(points.map((p) => p.map((x, j) => scale * (x + 10 * j))));
-    assert.equal(transformed.facets.length, 6);
-    assert.equal(solve(transformed).status, 'found');
-  }
-  assert.throws(=> convexHull([[0, 0], [1, 0], [2, 0]]), /full dimensional/);
-  assert.throws(=> convexHull([[0, 0], [1, 0], [NaN, 1]]), /finite/);
-  assert.throws(=> convexHull([[0, 0], [1, 0], [0, 1, 2]]), /common dimension/);
-  assert.throws(=> convexHull(simplex(3), {maxCombinations: 1}), /budget exceeded/);
-  assert.throws(=> convexHull(simplex(3), {tolerance: 0}), /Tolerance/);
-})
+test 'hull combinatorics in dimensions 2 through 6', : void =>
+  for d of [2..6]
+    p := convexHull simplex d
+    assert.equal p.facets#, d + 1
+    assert.equal p.ridges#, d * (d + 1) / 2
+    assert.ok p.facets.every (f) => f.vertices# is d
+  for d of [2..4]
+    cube := convexHull hypercube d
+    assert.equal cube.facets#, 2 * d
+    assert.equal cube.ridges#, 2 * d * (d - 1)
+    assert.ok cube.facets.every (f) => f.vertices# is 2 ** (d - 1)
+    assert.ok cube.ridges.every (r) => r.vertices# is 2 ** (d - 2)
+    cross := convexHull crossPolytope d
+    assert.equal cross.facets#, 2 ** d
+    assert.equal cross.ridges#, d * 2 ** (d - 1)
 
-test('interior intersection: crossing, containment, contact, disjoint, dimensions 1–4', => {
-  const horizontal = body([[-4, -.1], [-4, .1], [4, -.1], [4, .1]]);
-  const vertical = body([[1.9, -1], [2.1, -1], [1.9, 5], [2.1, 5]]);
-  assert.equal(interiorOverlap(horizontal, vertical, 1e-8), true);
-  for (let d = 1; d <= 4; d++) {
-    const vertices = d is 1 ? [[-1], [1]] : hypercube(d);
-    const a = body(vertices);
-    assert.equal(interiorOverlap(a, a, 1e-8), true);
-    assert.equal(interiorOverlap(a, body(vertices.map((p) => mul(p, .1))), 1e-8), true);
-    for (const shift of [2, 3]) assert.equal(interiorOverlap(a, body(vertices.map((p) => p.map((x, j) => x + (j is 0 ? shift : 0)))), 1e-8), false);
-    assert.equal(interiorOverlap(a, body(vertices.map((p) => p.map((x) => x + 2))), 1e-8), false);
-    assert.equal(interiorOverlap(a, body(vertices.map((p) => p.map((x, j) => x + (j is 0 ? 1.9 : 0)))), 1e-8), true);
-  }
+
+test 'redundant points, translations, rescaling, and invalid input', =>
+  points := hypercube 3
+  extra := [...points, [0, 0, 0], [...points[0]], [1, 0, 0], [1, 1, 0]]
+  p := convexHull extra
+  assert.equal(p.facets#, 6); assert.equal p.ridges#, 12
+  for scale of [1e-8, 1, 1e8]
+    transformed := convexHull points.map (p) => p.map (x, j) => scale * (x + 10 * j)
+    assert.equal transformed.facets#, 6
+    assert.equal solve(transformed).status, 'found'
+  assert.throws => convexHull([[0, 0], [1, 0], [2, 0]]), /full dimensional/
+  assert.throws => convexHull([[0, 0], [1, 0], [NaN, 1]]), /finite/
+  assert.throws => convexHull([[0, 0], [1, 0], [0, 1, 2]]), /common dimension/
+  assert.throws => convexHull(simplex(3), maxCombinations: 1), /budget exceeded/
+  assert.throws => convexHull(simplex(3), tolerance: 0), /Tolerance/;
+
+
+test 'interior intersection: crossing, containment, contact, disjoint, dimensions 1–4', =>
+  horizontal := body [[-4, -.1], [-4, .1], [4, -.1], [4, .1]]
+  vertical := body [[1.9, -1], [2.1, -1], [1.9, 5], [2.1, 5]]
+  assert.equal interiorOverlap(horizontal, vertical, 1e-8), true
+  for d of [1..4]
+    vertices := d is 1 ? [[-1], [1]] : hypercube d
+    a := body vertices
+    assert.equal interiorOverlap(a, a, 1e-8), true
+    assert.equal interiorOverlap(a, body(vertices.map(mul(., .1))), 1e-8), true
+    for (shift of [2, 3]) assert.equal interiorOverlap(a, body(vertices.map (p) => p.map (x, j) => x + (j is 0 ? shift : 0)), 1e-8), false
+    assert.equal interiorOverlap(a, body(vertices.map (p) => p.map (x) => x + 2), 1e-8), false
+    assert.equal interiorOverlap(a, body(vertices.map (p) => p.map (x, j) => x + (j is 0 ? 1.9 : 0)), 1e-8), true
   // Bounding boxes overlap, but the two triangles only share a diagonal.
-  assert.equal(interiorOverlap(body([[0, 0], [1, 0], [0, 1]]), body([[1, 1], [1, 0], [0, 1]]), 1e-8), false);
-})
+  assert.equal interiorOverlap(body([[0, 0], [1, 0], [0, 1]]), body([[1, 1], [1, 0], [0, 1]]), 1e-8), false;
 
-test('LP intersection agrees with independent planar SAT', : void =>
-  for (let seed = 0; seed < 100; seed++) {
-    const a = randomPoints(2, 5, seed, 'sphere');
-    const b = randomPoints(2, 5, seed + 100, 'sphere').map((p) => [p[0] + (seed % 8) / 4, p[1] + (seed % 3) / 5]);
-    assert.equal(interiorOverlap(body(a), body(b), 1e-8), planarOverlap(a, b), `seed ${seed}`);
-  }
-)
 
-test('isometric development and opposite hinge sides in dimensions 2–6', : void =>
-  for (let d = 2; d <= 6; d++) {
-    for (const points of [simplex(d), randomPoints(d, d + 2, d, 'gaussian')]) {
-      const p = convexHull(points);
-      const result = solve(p, {maxNodes: 100_000, timeoutMs: 20_000});
-      assert.equal(result.status, 'found', `dimension ${d}`);
-      verify(p, result.tree!);
-    }
-  }
-  for (const points of [hypercube(3), hypercube(4), prism(simplex(3)), pyramid(hypercube(3))]) {
-    const p = convexHull(points);
-    const result = solve(p);
-    assert.equal(result.overlapMethod, 'dual-lp');
-    assert.equal(result.status, 'found'); verify(p, result.tree!);
-  }
-)
+test 'LP intersection agrees with independent planar SAT', : void =>
+  for seed of [0..<100]
+    a := randomPoints 2, 5, seed, 'sphere'
+    b := randomPoints(2, 5, seed + 100, 'sphere').map (p) => [p[0] + seed % 8 / 4, p[1] + seed % 3 / 5]
+    assert.equal interiorOverlap(body(a), body(b), 1e-8), planarOverlap(a, b), `seed ${seed}`
 
-test('enumeration counts: polygon cycles, Cayley simplex counts, and cube 384', => {
-  for (const n of [3, 4, 7]) {
-    const p = convexHull(Array.from({length: n}, (_, i) => [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)]));
-    const result = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
-    assert.equal(result.stats.completeTrees, n); assert.equal(result.stats.solutions, n);
-  }
-  for (const d of [3, 4]) {
-    const p = convexHull(simplex(d));
-    const result = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
-    assert.equal(result.stats.completeTrees, (d + 1) ** (d - 1));
-    assert.equal(result.termination, 'exhausted');
-  }
-  const cube = solve(convexHull(hypercube(3)), {stopAfterFirst: false, pruneOverlaps: false});
-  assert.equal(cube.stats.completeTrees, 384);
-})
 
-test('pruning preserves solution counts; independent edge-subset enumeration', => {
-  let prunes = 0;
-  for (const seed of [0, 4, 6]) {
-    const p = convexHull(randomPoints(3, 6, seed, 'gaussian').map((p) => [p[0], p[1], p[2] * .05]));
-    const all = solve(p, {stopAfterFirst: false, pruneOverlaps: false});
-    const pruned = solve(p, {stopAfterFirst: false});
-    assert.equal(pruned.stats.solutions, all.stats.solutions);
-    prunes += pruned.stats.overlapPrunes;
-    let count = 0;
-    let nonoverlapping = 0;
-    for (const ids of combinations(p.ridges.length, p.facets.length - 1)) {
-      let faces: Placement[];
-      try { faces = developTree(p, ids); } catch { continue; }
-      count++;
-      let overlap = false;
-      for (let i = 0; i < faces.length; i++) {
-        for (let j = 0; j < i; j++) if (planarOverlap(faces[i].coordinates, faces[j].coordinates)) overlap = true;
-      }
-      if (not overlap) nonoverlapping++;
-    }
-    assert.equal(all.stats.completeTrees, count);
-    assert.equal(all.stats.solutions, nonoverlapping);
-    assert.equal(solve(p, {root: p.facets.length - 1, stopAfterFirst: false}).stats.solutions, nonoverlapping);
-  }
-  assert.ok(prunes > 0, 'Must exercise actual overlapping branches.');
-})
+test 'isometric development and opposite hinge sides in dimensions 2–6', : void =>
+  for d of [2..6]
+    for points of [simplex(d), randomPoints d, d + 2, d, 'gaussian']
+      p := convexHull points
+      result := solve p, maxNodes: 100_000, timeoutMs: 20_000
+      assert.equal result.status, 'found', `dimension ${d}`
+      verify p, result.tree!
+  for points of [hypercube(3), hypercube(4), prism(simplex 3), pyramid hypercube 3]
+    p := convexHull points
+    result := solve p
+    assert.equal result.overlapMethod, 'dual-lp'
+    assert.equal(result.status, 'found'); verify p, result.tree!
 
-test('forward checking and bridge propagation preserve exhaustive solution counts for every order', => {
-  let forced = 0, blocked = 0, reused = 0;
-  const examples = [simplex(3), hypercube(3), randomPoints(3, 5, 7, 'gaussian').map((p) => [p[0], p[1], p[2] * .05]), cyclic(2, 5)];
-  for (const points of examples) {
-    const poly = convexHull(points);
-    const reference = solve(poly, {stopAfterFirst: false, pruneOverlaps: false, forceBridges: false});
-    for (const branchOrder of ['index', 'constrained', 'bottleneck'] as const) {
-      for (const forwardCheck of [true, false, 'auto'] as const) {
-        for (const forceBridges of [true, false]) {
-          const result = solve(poly, {branchOrder, forwardCheck, forceBridges, stopAfterFirst: false});
-          assert.equal(result.termination, 'exhausted');
-          assert.equal(result.stats.solutions, reference.stats.solutions, `${branchOrder}/${forwardCheck}/${forceBridges}`);
-          if (result.tree) verify(poly, result.tree);
-          forced += result.searchStats.forcedEdges; blocked += result.searchStats.blockedEdges; reused += result.searchStats.reusedOverlapChecks;
-        }
-      }
-    }
-  }
-  assert.ok(forced > 0 and blocked > 0 and reused > 0);
-  const hard = convexHull(randomPoints(4, 11, 17273));
-  const solved = solve(hard, {maxNodes: 200});
-  assert.equal(solved.status, 'found'); verify(hard, solved.tree!);
-  assert.ok(solved.searchStats.parentChecksSkipped > 0);
-  assert.throws(=> solve(hard, {branchOrder: 'invalid' as any}), /branch order/);
-  assert.throws(=> solve(hard, {forwardCheck: 'invalid' as any}), /forward-check/);
-})
 
-test('limits are inconclusive; malformed trees/options fail explicitly', => {
-  const p = convexHull(simplex(3));
-  for (const options of [{maxNodes: 0}, {maxNodes: 1}, {timeoutMs: 0}]) {
-    const result = solve(p, options);
-    assert.equal(result.status, 'inconclusive'); assert.equal(result.exhaustive, false);
-    assert.equal(result.tree, null);
-  }
-  const partial = solve(p, {maxNodes: 5, stopAfterFirst: false});
-  assert.equal(partial.status, 'found'); assert.equal(partial.exhaustive, false);
-  assert.throws(=> solve(p, {root: -1}), /root/);
-  assert.throws(=> solve(p, {maxNodes: -1}), /maxNodes/);
-  assert.throws(=> solve(p, {overlapTolerance: NaN}), /overlapTolerance/);
-  assert.throws(=> developTree(p, [0, 0, 0]), /distinct/);
-  assert.throws(=> developTree(p, [0]), /distinct/);
-  assert.throws(=> developTree(p, [0, 1, 3]), /spanning tree/);
-  assert.throws(=> attachFacet(p, rootPlacement(p), 999), /Ridge/);
-})
+test 'enumeration counts: polygon cycles, Cayley simplex counts, and cube 384', =>
+  for n of [3, 4, 7]
+    p := convexHull Array.from length: n, (_, i) => [Math.cos(2 * Math.PI * i / n), Math.sin 2 * Math.PI * i / n]
+    result := solve p, stopAfterFirst: false, pruneOverlaps: false
+    assert.equal(result.stats.completeTrees, n); assert.equal result.stats.solutions, n
+  for d of [3, 4]
+    p := convexHull simplex d
+    result := solve p, stopAfterFirst: false, pruneOverlaps: false
+    assert.equal result.stats.completeTrees, (d + 1) ** (d - 1)
+    assert.equal result.termination, 'exhausted'
+  cube := solve convexHull(hypercube 3), stopAfterFirst: false, pruneOverlaps: false
+  assert.equal cube.stats.completeTrees, 384;
 
-test('generators are reproducible and produce expected dimensions', => {
-  for (const distribution of ['sphere', 'ball', 'box', 'gaussian'] as const) {
-    const a = randomPoints(4, 9, 42, distribution);
-    assert.deepEqual(a, randomPoints(4, 9, 42, distribution));
-    assert.notDeepEqual(a, randomPoints(4, 9, 43, distribution));
-    assert.equal(affineBasis(a, 1e-9).length, 4);
-    if (distribution is 'sphere') a.forEach((p) => close(norm(p), 1));
-    if (distribution is 'ball') a.forEach((p) => assert.ok(norm(p) <= 1));
-  }
-  assert.equal(convexHull(cyclic(4, 7)).facets.length, 14);
-  assert.equal(convexHull(hypersimplex(3, 2)).facets.length, 8);
-  assert.equal(convexHull(product(simplex(2), simplex(2))).facets.length, 6);
-  assert.throws(=> randomPoints(3, 3), /count/);
-  assert.throws(=> simplex(1), /Dimension/);
-})
 
-test('CLI generation, file solve, saved batches, cutoff and argument errors', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-test-'));
-  try {
-    const input = join(directory, 'cube.json');
-    const generated = cli(['generate', '--family', 'cube', '--dimension', '3', '--output', input]);
-    assert.equal(generated.status, 0, String(generated.stderr));
-    assert.equal(JSON.parse(readFileSync(input, 'utf8')).points.length, 8);
-    const solved = cli(['solve', input]);
-    assert.equal(solved.status, 0, String(solved.stderr));
-    assert.equal(JSON.parse(String(solved.stdout)).result.status, 'found');
-    assert.equal(JSON.parse(String(solved.stdout)).outputDetail, 'concise');
-    assert.equal(JSON.parse(String(solved.stdout)).result.placements, undefined);
-    assert.equal(String(solved.stdout).trim().split('\n').length, 1);
-    const full = cli(['solve', input, '--full-output']);
-    assert.equal(full.status, 0, String(full.stderr));
-    assert.equal(JSON.parse(String(full.stdout)).result.placements.length, 6);
-    assert.equal(JSON.parse(String(full.stdout)).outputDetail, 'full');
-    const limited = cli(['solve', input, '--max-nodes=0']);
-    assert.equal(JSON.parse(String(limited.stdout)).result.status, 'inconclusive');
-    const batch = cli(['search', '--dimension', '3', '--points', '5', '--seed', '17', '--trials', '2', '--output', directory]);
-    assert.equal(batch.status, 0, String(batch.stderr));
-    const run = join(directory, readdirSync(directory).find((p) => p.startsWith('run-'))!);
-    const progress = String(batch.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(progress.length, 2);
-    for (const row of progress) {
-      assert.equal(row.outputFile, resolve(run, row.file));
-      assert.ok(existsSync(row.outputFile));
-      assert.ok(Number.isInteger(row.pid) and row.pid > 0);
-    }
-    const completion = String(batch.stderr).split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).at(-1);
-    assert.equal(completion.outputFile, resolve(run, 'summary.json'));
-    assert.equal(completion.pid, progress[0].pid);
-    const worker = JSON.parse(readFileSync(join(run, 'run.json'), 'utf8')).worker;
-    assert.equal(worker.pid, progress[0].pid);
-    assert.equal(worker.hostname, hostname());
-    assert.ok(Number.isFinite(Date.parse(worker.startedAt)));
-    const summary = JSON.parse(readFileSync(join(run, 'summary.json'), 'utf8'));
-    assert.equal(summary.found, 2); assert.equal(summary.candidates, 0);
-    const saved = JSON.parse(readFileSync(join(run, 'trial-000000-seed-17.json'), 'utf8'));
-    assert.deepEqual(saved.points, randomPoints(3, 5, 17));
-    assert.equal(saved.hullOptions.maxCombinations, 'Infinity');
-    assert.equal(saved.solveOptions.maxNodes, 'Infinity');
-    assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
-    assert.equal(saved.result.placements, undefined);
-    assert.equal(cli(['solve', '--typo', '1']).status, 1);
-    assert.equal(cli(['generate', '--dimension', '2.5']).status, 1);
-  } finally {
+test 'pruning preserves solution counts; independent edge-subset enumeration', =>
+  prunes .= 0
+  for seed of [0, 4, 6]
+    p := convexHull randomPoints(3, 6, seed, 'gaussian').map (p) => [p[0], p[1], p[2] * .05]
+    all := solve p, stopAfterFirst: false, pruneOverlaps: false
+    pruned := solve p, stopAfterFirst: false
+    assert.equal pruned.stats.solutions, all.stats.solutions
+    prunes += pruned.stats.overlapPrunes
+    count .= 0
+    nonoverlapping .= 0
+    for ids of combinations p.ridges#, p.facets# - 1
+      let faces: Placement[]
+      try
+        faces = developTree p, ids
+      catch
+        continue
+
+      count++
+      overlap .= false
+      for i of [0..<faces#]
+        for j of [0..<i] when planarOverlap faces[i].coordinates, faces[j].coordinates
+          overlap = true
+      nonoverlapping++ unless overlap
+    assert.equal all.stats.completeTrees, count
+    assert.equal all.stats.solutions, nonoverlapping
+    assert.equal solve(p, root: p.facets# - 1, stopAfterFirst: false).stats.solutions, nonoverlapping
+  assert.ok prunes > 0, 'Must exercise actual overlapping branches.';
+
+
+test 'forward checking and bridge propagation preserve exhaustive solution counts for every order', =>
+  forced .= 0; blocked .= 0; reused .= 0
+  examples := [simplex(3), hypercube(3), randomPoints(3, 5, 7, 'gaussian').map((p) => [p[0], p[1], p[2] * .05]), cyclic 2, 5]
+  for points of examples
+    poly := convexHull points
+    reference := solve poly, stopAfterFirst: false, pruneOverlaps: false, forceBridges: false
+    for branchOrder of ['index', 'constrained', 'bottleneck'] as const
+      for forwardCheck of [true, false, 'auto'] as const
+        for forceBridges of [true, false]
+          result := solve poly, {branchOrder, forwardCheck, forceBridges, stopAfterFirst: false}
+          assert.equal result.termination, 'exhausted'
+          assert.equal result.stats.solutions, reference.stats.solutions, `${branchOrder}/${forwardCheck}/${forceBridges}`
+          verify poly, result.tree if result.tree
+          forced += result.searchStats.forcedEdges; blocked += result.searchStats.blockedEdges; reused += result.searchStats.reusedOverlapChecks
+  assert.ok forced > 0 and blocked > 0 and reused > 0
+  hard := convexHull randomPoints 4, 11, 17273
+  solved := solve hard, maxNodes: 200
+  assert.equal(solved.status, 'found'); verify hard, solved.tree!
+  assert.ok solved.searchStats.parentChecksSkipped > 0
+  assert.throws => solve(hard, branchOrder: 'invalid' as any), /branch order/
+  assert.throws => solve(hard, forwardCheck: 'invalid' as any), /forward-check/;
+
+
+test 'limits are inconclusive; malformed trees/options fail explicitly', =>
+  p := convexHull simplex 3
+  for options of [maxNodes: 0, {maxNodes: 1}, timeoutMs: 0]
+    result := solve p, options
+    assert.equal(result.status, 'inconclusive'); assert.equal result.exhaustive, false
+    assert.equal result.tree, null
+  partial := solve p, maxNodes: 5, stopAfterFirst: false
+  assert.equal(partial.status, 'found'); assert.equal partial.exhaustive, false
+  assert.throws => solve(p, root: -1), /root/
+  assert.throws => solve(p, maxNodes: -1), /maxNodes/
+  assert.throws => solve(p, overlapTolerance: NaN), /overlapTolerance/
+  assert.throws => developTree(p, [0, 0, 0]), /distinct/
+  assert.throws => developTree(p, [0]), /distinct/
+  assert.throws => developTree(p, [0, 1, 3]), /spanning tree/
+  assert.throws => attachFacet(p, rootPlacement(p), 999), /Ridge/;
+
+
+test 'generators are reproducible and produce expected dimensions', =>
+  for distribution of ['sphere', 'ball', 'box', 'gaussian'] as const
+    a := randomPoints 4, 9, 42, distribution
+    assert.deepEqual a, randomPoints 4, 9, 42, distribution
+    assert.notDeepEqual a, randomPoints 4, 9, 43, distribution
+    assert.equal affineBasis(a, 1e-9)#, 4
+    if (distribution is 'sphere') a.forEach (p) => close norm(p), 1
+    if (distribution is 'ball') a.forEach (p) => assert.ok norm(p) <= 1
+  assert.equal convexHull(cyclic 4, 7).facets#, 14
+  assert.equal convexHull(hypersimplex 3, 2).facets#, 8
+  assert.equal convexHull(product simplex(2), simplex 2).facets#, 6
+  assert.throws => randomPoints(3, 3), /count/
+  assert.throws => simplex(1), /Dimension/;
+
+
+test 'CLI generation, file solve, saved batches, cutoff and argument errors', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-test-'
+  try
+    input := join directory, 'cube.json'
+    generated := cli ['generate', '--family', 'cube', '--dimension', '3', '--output', input]
+    assert.equal generated.status, 0, String generated.stderr
+    assert.equal JSON.parse(readFileSync input, 'utf8').points#, 8
+    solved := cli ['solve', input]
+    assert.equal solved.status, 0, String solved.stderr
+    assert.equal JSON.parse(String solved.stdout).result.status, 'found'
+    assert.equal JSON.parse(String solved.stdout).outputDetail, 'concise'
+    assert.equal JSON.parse(String solved.stdout).result.placements, undefined
+    assert.equal String(solved.stdout).trim().split('\n')#, 1
+    full := cli ['solve', input, '--full-output']
+    assert.equal full.status, 0, String full.stderr
+    assert.equal JSON.parse(String full.stdout).result.placements#, 6
+    assert.equal JSON.parse(String full.stdout).outputDetail, 'full'
+    limited := cli ['solve', input, '--max-nodes=0']
+    assert.equal JSON.parse(String limited.stdout).result.status, 'inconclusive'
+    batch := cli ['search', '--dimension', '3', '--points', '5', '--seed', '17', '--trials', '2', '--output', directory]
+    assert.equal batch.status, 0, String batch.stderr
+    run := join directory, readdirSync(directory).find((p) => p.startsWith 'run-')!
+    progress := String(batch.stdout).trim().split('\n').map JSON.parse .
+    assert.equal progress#, 2
+    for row of progress
+      assert.equal row.outputFile, resolve run, row.file
+      assert.ok existsSync row.outputFile
+      assert.ok Number.isInteger(row.pid) and row.pid > 0
+    completion := String(batch.stderr).split('\n').filter((line) => line.startsWith '{').map(JSON.parse(.)).at -1
+    assert.equal completion.outputFile, resolve run, 'summary.json'
+    assert.equal completion.pid, progress[0].pid
+    worker := JSON.parse(readFileSync join(run, 'run.json'), 'utf8').worker
+    assert.equal worker.pid, progress[0].pid
+    assert.equal worker.hostname, hostname()
+    assert.ok Number.isFinite Date.parse worker.startedAt
+    summary := JSON.parse readFileSync join(run, 'summary.json'), 'utf8'
+    assert.equal(summary.found, 2); assert.equal summary.candidates, 0
+    saved := JSON.parse readFileSync join(run, 'trial-000000-seed-17.json'), 'utf8'
+    assert.deepEqual saved.points, randomPoints 3, 5, 17
+    assert.equal saved.hullOptions.maxCombinations, 'Infinity'
+    assert.equal saved.solveOptions.maxNodes, 'Infinity'
+    assert.equal saved.solveOptions.timeoutMs, 'Infinity'
+    assert.equal saved.result.placements, undefined
+    assert.equal cli(['solve', '--typo', '1']).status, 1
+    assert.equal cli(['generate', '--dimension', '2.5']).status, 1;
+  finally
     // The directory is freshly created by mkdtemp inside the system temp dir.
-    rmSync(directory, {recursive: true, force: true});
-  }
-})
+    rmSync directory, recursive: true, force: true
 
-test('trial compaction preserves witnesses and candidates, skips live writes, and is repeatable', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-compact-test-'));
-  try {
-    const points = simplex(3), poly = convexHull(points), result = solve(poly);
-    const record = {formatVersion: 1, points, polytope: {facets: poly.facets.map((f) => f.vertices), ridges: poly.ridges}, result};
-    const full = trialJSON(record, true), concise = trialJSON(record);
-    const parsed = JSON.parse(concise);
-    assert.deepEqual(parsed.points, points);
-    assert.deepEqual(parsed.polytope, record.polytope);
-    assert.deepEqual(parsed.result.tree, result.tree);
-    assert.equal(parsed.result.placements, undefined);
-    verify(convexHull(parsed.points), parsed.result.tree);
-    assert.equal(JSON.parse(full).result.placements.length, poly.facets.length);
-    const candidate = {...record, result: {...result, status: 'no-unfolding', tree: null, placements: null}};
-    const candidateText = trialJSON(candidate);
-    assert.equal(JSON.parse(candidateText).outputDetail, 'full');
-    assert.equal(Object.hasOwn(JSON.parse(candidateText).result, 'placements'), true);
-    assert.ok(candidateText.includes('\n  '));
-    const run = join(directory, 'live'); mkdirSync(run);
-    writeFileSync(join(run, 'trial-found.json'), full);
-    writeFileSync(join(run, 'trial-candidate.json'), candidateText);
-    writeFileSync(join(run, 'trial-pending.json'), full);
-    writeFileSync(join(run, 'trial-partial.json'), '{"points":');
-    writeFileSync(join(run, 'trial-invalid.json'), '{');
-    const journal = ['found', 'candidate', 'invalid'].map((name) => JSON.stringify({file: `trial-${name}.json`, status: name is 'candidate' ? 'no-unfolding' : 'found'})).join('\n') + '\n';
-    writeFileSync(join(run, 'trials.jsonl'), journal);
-    const preview = compactResults([directory], true);
-    assert.equal(preview.wouldCompact, 1); assert.equal(preview.compacted, 0);
-    assert.equal(readFileSync(join(run, 'trial-found.json'), 'utf8'), full);
-    const compacted = compactResults([directory, run]);
-    assert.equal(compacted.examined, 5); assert.equal(compacted.compacted, 1);
-    assert.equal(compacted.candidates, 1); assert.equal(compacted.pending, 2);
-    assert.equal(compacted.invalid, 1); assert.equal(compacted.errors, 0);
-    assert.equal(compacted.savedBytes, Buffer.byteLength(full) - Buffer.byteLength(concise));
-    assert.equal(readFileSync(join(run, 'trial-found.json'), 'utf8'), concise);
-    assert.equal(readFileSync(join(run, 'trial-candidate.json'), 'utf8'), candidateText);
-    assert.equal(readFileSync(join(run, 'trial-pending.json'), 'utf8'), full);
-    assert.equal(readFileSync(join(run, 'trial-partial.json'), 'utf8'), '{"points":');
-    assert.equal(readFileSync(join(run, 'trials.jsonl'), 'utf8'), journal);
-    assert.equal(compactResults([directory]).compacted, 0);
-    assert.ok(readdirSync(run).every((name) => not name.endsWith('.tmp')));
+
+test 'trial compaction preserves witnesses and candidates, skips live writes, and is repeatable', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-compact-test-'
+  try
+    points := simplex(3); poly := convexHull(points); result := solve poly
+    record := {formatVersion: 1, points, polytope: facets: poly.facets.map(.vertices), ridges: poly.ridges, result}
+    full := trialJSON(record, true); concise := trialJSON record
+    parsed := JSON.parse concise
+    assert.deepEqual parsed.points, points
+    assert.deepEqual parsed.polytope, record.polytope
+    assert.deepEqual parsed.result.tree, result.tree
+    assert.equal parsed.result.placements, undefined
+    verify convexHull(parsed.points), parsed.result.tree
+    assert.equal JSON.parse(full).result.placements#, poly.facets#
+    candidate := {...record, result: {...result, status: 'no-unfolding', tree: null, placements: null}}
+    candidateText := trialJSON candidate
+    assert.equal JSON.parse(candidateText).outputDetail, 'full'
+    assert.equal Object.hasOwn(JSON.parse(candidateText).result, 'placements'), true
+    assert.ok '\n  ' is in candidateText
+    run := join(directory, 'live'); mkdirSync run
+    writeFileSync join(run, 'trial-found.json'), full
+    writeFileSync join(run, 'trial-candidate.json'), candidateText
+    writeFileSync join(run, 'trial-pending.json'), full
+    writeFileSync join(run, 'trial-partial.json'), '{"points":'
+    writeFileSync join(run, 'trial-invalid.json'), '{'
+    journal := ['found', 'candidate', 'invalid'].map((name) => JSON.stringify file: `trial-${name}.json`, status: name is 'candidate' ? 'no-unfolding' : 'found').join('\n') + '\n'
+    writeFileSync join(run, 'trials.jsonl'), journal
+    preview := compactResults [directory], true
+    assert.equal(preview.wouldCompact, 1); assert.equal preview.compacted, 0
+    assert.equal readFileSync(join(run, 'trial-found.json'), 'utf8'), full
+    compacted := compactResults [directory, run]
+    assert.equal(compacted.examined, 5); assert.equal compacted.compacted, 1
+    assert.equal(compacted.candidates, 1); assert.equal compacted.pending, 2
+    assert.equal(compacted.invalid, 1); assert.equal compacted.errors, 0
+    assert.equal compacted.savedBytes, Buffer.byteLength(full) - Buffer.byteLength concise
+    assert.equal readFileSync(join(run, 'trial-found.json'), 'utf8'), concise
+    assert.equal readFileSync(join(run, 'trial-candidate.json'), 'utf8'), candidateText
+    assert.equal readFileSync(join(run, 'trial-pending.json'), 'utf8'), full
+    assert.equal readFileSync(join(run, 'trial-partial.json'), 'utf8'), '{"points":'
+    assert.equal readFileSync(join(run, 'trials.jsonl'), 'utf8'), journal
+    assert.equal compactResults([directory]).compacted, 0
+    assert.ok readdirSync(run).every (name) => not name.endsWith '.tmp'
     // The next pass can consume a trial once the live writer journals it.
-    writeFileSync(join(run, 'trials.jsonl'), journal + JSON.stringify({file: 'trial-pending.json', status: 'found'}) + '\n');
-    assert.equal(compactResults([directory]).compacted, 1);
+    writeFileSync join(run, 'trials.jsonl'), journal + JSON.stringify(file: 'trial-pending.json', status: 'found') + '\n'
+    assert.equal compactResults([directory]).compacted, 1
     // Completed legacy runs need no journal.
-    const legacy = join(directory, 'legacy'); mkdirSync(legacy);
-    writeFileSync(join(legacy, 'summary.json'), '{}');
-    writeFileSync(join(legacy, 'trial-old.json'), full);
-    const command = cli(['compact', directory, legacy, '--dry-run']);
-    assert.equal(command.status, 0, String(command.stderr));
-    assert.equal(JSON.parse(String(command.stdout)).wouldCompact, 1);
-    assert.equal(compactResults([legacy]).compacted, 1);
-    assert.equal(readFileSync(join(legacy, 'summary.json'), 'utf8'), '{}');
-  } finally { rmSync(directory, {recursive: true, force: true}); }
-})
+    legacy := join(directory, 'legacy'); mkdirSync legacy
+    writeFileSync join(legacy, 'summary.json'), '{}'
+    writeFileSync join(legacy, 'trial-old.json'), full
+    command := cli ['compact', directory, legacy, '--dry-run']
+    assert.equal command.status, 0, String command.stderr
+    assert.equal JSON.parse(String command.stdout).wouldCompact, 1
+    assert.equal compactResults([legacy]).compacted, 1
+    assert.equal readFileSync(join(legacy, 'summary.json'), 'utf8'), '{}';
+  finally
+    rmSync directory, {recursive: true, force: true}
 
-test('retry selects inconclusive files, preserves settings, resets limits, and supports repeated retries', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-test-'));
-  try {
-    const source = join(directory, 'source');
-    mkdirSync(source);
-    const cutoff = cli(['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp', '--hull-method', 'incremental']);
-    assert.equal(cutoff.status, 0, String(cutoff.stderr));
-    const original = JSON.parse(String(cutoff.stdout));
-    original.solveOptions.forwardCheck = true;
-    original.solveOptions.branchOrder = 'constrained';
-    assert.equal(original.result.status, 'inconclusive');
-    const name = 'trial-000123-seed-0.json';
-    writeFileSync(join(source, name), JSON.stringify(original));
+
+
+test 'retry selects inconclusive files, preserves settings, resets limits, and supports repeated retries', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-retry-test-'
+  try
+    source := join directory, 'source'
+    mkdirSync source
+    cutoff := cli ['solve', '--family', 'simplex', '--dimension', '3', '--max-nodes', '0', '--timeout-ms', '10000', '--max-hull-combinations', '100', '--tolerance', '1e-8', '--overlap-tolerance', '1e-7', '--root', '1', '--all', '--no-prune', '--overlap-method', 'dual-lp', '--hull-method', 'incremental']
+    assert.equal cutoff.status, 0, String cutoff.stderr
+    original := JSON.parse String cutoff.stdout
+    original.solveOptions.forwardCheck = true
+    original.solveOptions.branchOrder = 'constrained'
+    assert.equal original.result.status, 'inconclusive'
+    name := 'trial-000123-seed-0.json'
+    writeFileSync join(source, name), JSON.stringify original
     // Other statuses must be ignored, without needing their point arrays.
-    writeFileSync(join(source, 'trial-found.json'), JSON.stringify({result: {status: 'found'}}));
-    writeFileSync(join(source, 'trial-candidate.json'), JSON.stringify({result: {status: 'no-unfolding'}}));
-    writeFileSync(join(source, 'trial-error.json'), JSON.stringify({error: 'previous hull failure'}));
-    writeFileSync(join(source, 'trials.jsonl'), '{interrupted journal');
-    const before = readdirSync(source).map((name) => [name, readFileSync(join(source, name), 'utf8')]);
+    writeFileSync join(source, 'trial-found.json'), JSON.stringify result: status: 'found'
+    writeFileSync join(source, 'trial-candidate.json'), JSON.stringify result: status: 'no-unfolding'
+    writeFileSync join(source, 'trial-error.json'), JSON.stringify error: 'previous hull failure'
+    writeFileSync join(source, 'trials.jsonl'), '{interrupted journal'
+    before := readdirSync(source).map (name) => [name, readFileSync join(source, name), 'utf8']
 
-    const retry = cli(['retry', source]);
-    assert.equal(retry.status, 0, String(retry.stderr));
-    const lines = String(retry.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].status, 'found');
-    assert.equal(lines[0].sourceFile, join(source, name));
-    const run = join(directory, readdirSync(directory).find((name) => name.startsWith('retry-'))!);
-    assert.ok(String(retry.stderr).trim().endsWith(`Results saved to ${run}`));
-    const saved = JSON.parse(readFileSync(join(run, name), 'utf8'));
-    assert.deepEqual(saved.points, original.points);
-    assert.deepEqual(saved.generator, original.generator);
-    assert.equal(saved.hullOptions.maxCombinations, 'Infinity');
-    assert.equal(saved.solveOptions.maxNodes, 'Infinity');
-    assert.equal(saved.solveOptions.timeoutMs, 'Infinity');
-    assert.equal(saved.hullOptions.tolerance, 1e-8);
-    assert.equal(saved.hullOptions.method, 'incremental');
-    assert.equal(saved.polytope.hullMethod, 'incremental');
-    assert.equal(saved.solveOptions.overlapTolerance, 1e-7);
-    assert.equal(saved.solveOptions.overlapMethod, 'dual-lp');
-    assert.equal(saved.result.overlapMethod, 'dual-lp');
-    assert.equal(saved.solveOptions.root, 1);
-    assert.equal(saved.solveOptions.stopAfterFirst, false);
-    assert.equal(saved.solveOptions.pruneOverlaps, false);
-    assert.equal(saved.solveOptions.forwardCheck, true);
-    assert.equal(saved.solveOptions.branchOrder, 'constrained');
-    assert.equal(saved.result.searchOptions.forwardCheck, false, '--no-prune disables forward checking');
-    assert.equal(saved.result.exhaustive, true);
-    assert.equal(saved.result.stats.completeTrees, 16);
-    assert.deepEqual(readdirSync(source).map((name) => [name, readFileSync(join(source, name), 'utf8')]), before);
+    retry := cli ['retry', source]
+    assert.equal retry.status, 0, String retry.stderr
+    lines := String(retry.stdout).trim().split('\n').map JSON.parse .
+    assert.equal lines#, 1
+    assert.equal lines[0].status, 'found'
+    assert.equal lines[0].sourceFile, join source, name
+    run := join directory, readdirSync(directory).find((name) => name.startsWith 'retry-')!
+    assert.ok String(retry.stderr).trim().endsWith `Results saved to ${run}`
+    saved := JSON.parse readFileSync join(run, name), 'utf8'
+    assert.deepEqual saved.points, original.points
+    assert.deepEqual saved.generator, original.generator
+    assert.equal saved.hullOptions.maxCombinations, 'Infinity'
+    assert.equal saved.solveOptions.maxNodes, 'Infinity'
+    assert.equal saved.solveOptions.timeoutMs, 'Infinity'
+    assert.equal saved.hullOptions.tolerance, 1e-8
+    assert.equal saved.hullOptions.method, 'incremental'
+    assert.equal saved.polytope.hullMethod, 'incremental'
+    assert.equal saved.solveOptions.overlapTolerance, 1e-7
+    assert.equal saved.solveOptions.overlapMethod, 'dual-lp'
+    assert.equal saved.result.overlapMethod, 'dual-lp'
+    assert.equal saved.solveOptions.root, 1
+    assert.equal saved.solveOptions.stopAfterFirst, false
+    assert.equal saved.solveOptions.pruneOverlaps, false
+    assert.equal saved.solveOptions.forwardCheck, true
+    assert.equal saved.solveOptions.branchOrder, 'constrained'
+    assert.equal saved.result.searchOptions.forwardCheck, false, '--no-prune disables forward checking'
+    assert.equal saved.result.exhaustive, true
+    assert.equal saved.result.stats.completeTrees, 16
+    assert.deepEqual readdirSync(source).map((name) => [name, readFileSync join(source, name), 'utf8']), before
 
-    const emptyOutput = join(directory, 'empty');
-    const empty = cli(['retry', run, '--output', emptyOutput]);
-    assert.equal(empty.status, 0, String(empty.stderr));
-    assert.match(String(empty.stderr), /No inconclusive trials/);
-    assert.equal(existsSync(emptyOutput), false);
-    const limitedOutput = join(directory, 'limited');
-    const limited = cli(['retry', source, '--ignore-coverage', '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--forward-check', 'off', '--branch-order', 'bottleneck', '--no-force-bridges', '--output', limitedOutput]);
-    assert.equal(limited.status, 0, String(limited.stderr));
-    const limitedRun = join(limitedOutput, readdirSync(limitedOutput)[0]);
-    const limitedSaved = JSON.parse(readFileSync(join(limitedRun, name), 'utf8'));
-    assert.equal(limitedSaved.result.status, 'inconclusive');
-    assert.equal(limitedSaved.solveOptions.maxNodes, 0);
-    assert.equal(limitedSaved.hullOptions.tolerance, 1e-10);
-    assert.equal(limitedSaved.hullOptions.method, 'enumerate');
-    assert.equal(limitedSaved.solveOptions.overlapTolerance, 1e-9);
-    assert.equal(limitedSaved.solveOptions.root, 0);
-    assert.equal(limitedSaved.solveOptions.overlapMethod, 'gjk-lp');
-    assert.equal(limitedSaved.solveOptions.forwardCheck, false);
-    assert.equal(limitedSaved.solveOptions.branchOrder, 'bottleneck');
-    assert.equal(limitedSaved.solveOptions.forceBridges, false);
-    const again = cli(['retry', limitedRun, '--ignore-coverage']);
-    assert.equal(again.status, 0, String(again.stderr));
-    assert.equal(JSON.parse(String(again.stdout)).status, 'found');
-    const combinedOutput = join(directory, 'combined');
-    const combined = cli(['retry', source, limitedRun, source + '/.', run, '--ignore-coverage', '--max-nodes', '0', '--output', combinedOutput]);
-    assert.equal(combined.status, 0, String(combined.stderr));
-    const combinedRows = String(combined.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(combinedRows.length, 2, 'Duplicate directories and successful trials must not be retried.');
-    assert.equal(new Set(combinedRows.map((row) => row.file)).size, 2, 'Same source filenames must not collide.');
-    assert.deepEqual(combinedRows.map((row) => row.sourceFile), [join(source, name), join(limitedRun, name)]);
-    const combinedRun = join(combinedOutput, readdirSync(combinedOutput)[0]);
-    const combinedMetadata = JSON.parse(readFileSync(join(combinedRun, 'run.json'), 'utf8'));
-    assert.deepEqual(combinedMetadata.sourceDirectories, [source, limitedRun, run]);
-    const combinedSaved = combinedRows.map((row) => JSON.parse(readFileSync(join(combinedRun, row.file), 'utf8')));
-    assert.deepEqual(combinedSaved.map((saved) => saved.hullOptions.tolerance), [1e-8, 1e-10]);
-    assert.ok(combinedSaved.every((saved) => saved.result.status is 'inconclusive'));
-    assert.deepEqual(combinedSaved.map((saved) => saved.points), [original.points, original.points]);
-    const combinedAgain = cli(['retry', combinedRun, '--ignore-coverage']);
-    assert.equal(combinedAgain.status, 0, String(combinedAgain.stderr));
-    assert.ok(String(combinedAgain.stdout).trim().split('\n').map((line) => JSON.parse(line)).every((row) => row.status is 'found'));
-    assert.deepEqual(readdirSync(source).map((name) => [name, readFileSync(join(source, name), 'utf8')]), before);
-    const invalidOutput = join(directory, 'invalid');
-    assert.equal(cli(['retry', source, join(directory, 'missing'), '--output', invalidOutput]).status, 1);
-    assert.equal(existsSync(invalidOutput), false);
-    assert.equal(cli(['retry']).status, 1);
-    assert.equal(cli(['retry', source, '--seed', '0']).status, 1);
-    assert.equal(cli(['retry', join(directory, 'missing')]).status, 1);
-  } finally {
+    emptyOutput := join directory, 'empty'
+    empty := cli ['retry', run, '--output', emptyOutput]
+    assert.equal empty.status, 0, String empty.stderr
+    assert.match String(empty.stderr), /No inconclusive trials/
+    assert.equal existsSync(emptyOutput), false
+    limitedOutput := join directory, 'limited'
+    limited := cli ['retry', source, '--ignore-coverage', '--max-nodes', '0', '--tolerance', '1e-10', '--overlap-tolerance', '1e-9', '--root', '0', '--overlap-method', 'gjk-lp', '--hull-method', 'enumerate', '--forward-check', 'off', '--branch-order', 'bottleneck', '--no-force-bridges', '--output', limitedOutput]
+    assert.equal limited.status, 0, String limited.stderr
+    limitedRun := join limitedOutput, readdirSync(limitedOutput)[0]
+    limitedSaved := JSON.parse readFileSync join(limitedRun, name), 'utf8'
+    assert.equal limitedSaved.result.status, 'inconclusive'
+    assert.equal limitedSaved.solveOptions.maxNodes, 0
+    assert.equal limitedSaved.hullOptions.tolerance, 1e-10
+    assert.equal limitedSaved.hullOptions.method, 'enumerate'
+    assert.equal limitedSaved.solveOptions.overlapTolerance, 1e-9
+    assert.equal limitedSaved.solveOptions.root, 0
+    assert.equal limitedSaved.solveOptions.overlapMethod, 'gjk-lp'
+    assert.equal limitedSaved.solveOptions.forwardCheck, false
+    assert.equal limitedSaved.solveOptions.branchOrder, 'bottleneck'
+    assert.equal limitedSaved.solveOptions.forceBridges, false
+    again := cli ['retry', limitedRun, '--ignore-coverage']
+    assert.equal again.status, 0, String again.stderr
+    assert.equal JSON.parse(String again.stdout).status, 'found'
+    combinedOutput := join directory, 'combined'
+    combined := cli ['retry', source, limitedRun, source + '/.', run, '--ignore-coverage', '--max-nodes', '0', '--output', combinedOutput]
+    assert.equal combined.status, 0, String combined.stderr
+    combinedRows := String(combined.stdout).trim().split('\n').map JSON.parse .
+    assert.equal combinedRows#, 2, 'Duplicate directories and successful trials must not be retried.'
+    assert.equal new Set(combinedRows.map(.file)).size, 2, 'Same source filenames must not collide.'
+    assert.deepEqual combinedRows.map(.sourceFile), [join(source, name), join limitedRun, name]
+    combinedRun := join combinedOutput, readdirSync(combinedOutput)[0]
+    combinedMetadata := JSON.parse readFileSync join(combinedRun, 'run.json'), 'utf8'
+    assert.deepEqual combinedMetadata.sourceDirectories, [source, limitedRun, run]
+    combinedSaved := combinedRows.map (row) => JSON.parse readFileSync join(combinedRun, row.file), 'utf8'
+    assert.deepEqual combinedSaved.map((saved) => saved.hullOptions.tolerance), [1e-8, 1e-10]
+    assert.ok combinedSaved.every (saved) => saved.result.status is 'inconclusive'
+    assert.deepEqual combinedSaved.map(.points), [original.points, original.points]
+    combinedAgain := cli ['retry', combinedRun, '--ignore-coverage']
+    assert.equal combinedAgain.status, 0, String combinedAgain.stderr
+    assert.ok String(combinedAgain.stdout).trim().split('\n').map(JSON.parse(.)).every (row) => row.status is 'found'
+    assert.deepEqual readdirSync(source).map((name) => [name, readFileSync join(source, name), 'utf8']), before
+    invalidOutput := join directory, 'invalid'
+    assert.equal cli(['retry', source, join(directory, 'missing'), '--output', invalidOutput]).status, 1
+    assert.equal existsSync(invalidOutput), false
+    assert.equal cli(['retry']).status, 1
+    assert.equal cli(['retry', source, '--seed', '0']).status, 1
+    assert.equal cli(['retry', join directory, 'missing']).status, 1;
+  finally
     // Fresh mkdtemp directory owned by this test.
-    rmSync(directory, {recursive: true, force: true});
-  }
-})
+    rmSync directory, recursive: true, force: true
 
-test('timings group parameters, separate cutoffs, and measure cumulative tails', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-timings-test-'));
-  try {
-    const generator = {family: 'random', dimension: 4, count: 8, distribution: 'sphere'};
-    function run(name: string, metadata: object, values: (number | null)[], status = 'found', termination = 'solution'): string {
-      const path = join(directory, name); mkdirSync(path);
-      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
-      const lines: string[] = [];
-      for (const [i, elapsedMs] of values.entries()) {
-        const file = `trial-${i}.json`;
+
+test 'timings group parameters, separate cutoffs, and measure cumulative tails', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-timings-test-'
+  try
+    generator := family: 'random', dimension: 4, count: 8, distribution: 'sphere'
+
+    function run(name: string, metadata: object, values: (number | null)[], status = 'found', termination = 'solution'): string
+      path := join(directory, name); mkdirSync path
+      writeFileSync join(path, 'run.json'), JSON.stringify metadata
+      lines: string[] := []
+      for [i, elapsedMs] of values.entries()
+        file := `trial-${i}.json`
         // Indexed files must not be parsed; their journal rows are sufficient.
-        writeFileSync(join(path, file), 'large file intentionally not parsed');
-        lines.push(JSON.stringify({file, status, termination, elapsedMs}));
-      }
-      if (lines.length) lines.push(lines[0]); // Same attempt, not a second sample.
-      lines.push(JSON.stringify({file: 'trial-absent.json', status, elapsedMs: 999999999}));
-      writeFileSync(join(path, 'trials.jsonl'), lines.join('\n'));
-      return path;
-    }
-    const source = run('source', {generator}, [0, 1000, 1001, 60000, 60001, 3600000, 3600001, 86400000, 86400001, null]);
-    run('retry', {sourceDirectory: source}, [2]);
-    run('scaled', {generator: {...generator, scales: [1, 1, 1, .01]}}, [7]);
-    run('gaussian', {generator: {...generator, distribution: 'gaussian'}}, [8]);
-    run('timeout', {generator}, [10000], 'inconclusive', 'timeout');
-    run('limited-found', {generator}, [11], 'found', 'maxNodes');
-    const fallback = run('fallback', {generator}, []);
-    writeFileSync(join(fallback, 'trial-good.json'), JSON.stringify({result: {status: 'found', stats: {elapsedMs: 3}}}));
-    writeFileSync(join(fallback, 'trial-bad.json'), '{');
-    const report = summarizeTimings(directory, false, true);
-    const defaults = summarizeTimings(directory);
-    assert.equal(defaults.omittedTimeouts, 1);
-    assert.ok(defaults.groups.every((g) => not g.outcome.includes('timeout')));
-    assert.ok(defaults.totals.every((g) => not g.outcome.includes('timeout')));
-    const found = report.totals.find((g) => g.outcome is 'found')!;
-    assert.ok('minMs' in found);
-    assert.equal(found.count, 13);
-    assert.equal(found.minMs, 0); assert.equal(found.maxMs, 86400001);
-    assert.equal(found.medianMs, 1001); assert.equal(found.p90Ms, 86400000);
-    assert.equal(found.p99Ms, 86400001); assert.equal(found.p999Ms, 86400001);
-    assert.deepEqual([found.overSecond, found.overMinute, found.overHour, found.overDay], [7, 5, 3, 1]);
-    assert.equal(report.groups.filter((g) => g.outcome is 'found').length, 3);
-    assert.equal(report.totals.find((g) => g.outcome is 'timeout')!.count, 1);
-    assert.equal(report.totals.find((g) => g.outcome is 'found/node-limit')!.count, 1);
-    assert.equal(report.missingTimes, 1); assert.equal(report.unreadable, 1);
-    assert.equal(summarizeTimings(directory, true, true).groups.length, 7);
-    const text = formatTimings(report);
-    assert.match(text, /Min.*Median.*P99\.9.*Max.*>1s.*>1d/);
-    assert.match(text, /TOTAL/);
-    const result = cli(['timings', directory, '--json', '--include-timeouts']);
-    assert.equal(result.status, 0, String(result.stderr));
-    assert.deepEqual(JSON.parse(String(result.stdout)), JSON.parse(JSON.stringify(report)));
-    const multi = run('multi', {sourceDirectories: [source]}, [5]);
-    writeFileSync(join(multi, 'trials.jsonl'), JSON.stringify({file: 'trial-0.json', sourceFile: join(source, 'trial-0.json'), status: 'found', elapsedMs: 5}));
-    const inherited = summarizeTimings(multi).groups[0];
-    assert.equal(inherited.dimension, 4); assert.equal(inherited.points, 8);
-    assert.equal(inherited.parameters.distribution, 'sphere');
-    const empty = join(directory, 'empty'); mkdirSync(empty);
-    assert.match(formatTimings(summarizeTimings(empty)), /No recorded search timings/);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-})
+        writeFileSync join(path, file), 'large file intentionally not parsed'
+        lines.push JSON.stringify {file, status, termination, elapsedMs}
+      lines.push lines[0] if lines# // Same attempt, not a second sample.
+      lines.push JSON.stringify {file: 'trial-absent.json', status, elapsedMs: 999999999}
+      writeFileSync join(path, 'trials.jsonl'), lines.join '\n'
+      path
+    source := run 'source', {generator}, [0, 1000, 1001, 60000, 60001, 3600000, 3600001, 86400000, 86400001, null]
+    run 'retry', sourceDirectory: source, [2]
+    run 'scaled', generator: {...generator, scales: [1, 1, 1, .01]}, [7]
+    run 'gaussian', generator: {...generator, distribution: 'gaussian'}, [8]
+    run 'timeout', {generator}, [10000], 'inconclusive', 'timeout'
+    run 'limited-found', {generator}, [11], 'found', 'maxNodes'
+    fallback := run 'fallback', {generator}, []
+    writeFileSync join(fallback, 'trial-good.json'), JSON.stringify result: status: 'found', stats: elapsedMs: 3
+    writeFileSync join(fallback, 'trial-bad.json'), '{'
+    report := summarizeTimings directory, false, true
+    defaults := summarizeTimings directory
+    assert.equal defaults.omittedTimeouts, 1
+    assert.ok defaults.groups.every (g) => 'timeout' is not in g.outcome
+    assert.ok defaults.totals.every (g) => 'timeout' is not in g.outcome
+    found := report.totals.find((g) => g.outcome is 'found')!
+    assert.ok 'minMs' in found
+    assert.equal found.count, 13
+    assert.equal(found.minMs, 0); assert.equal found.maxMs, 86400001
+    assert.equal(found.medianMs, 1001); assert.equal found.p90Ms, 86400000
+    assert.equal(found.p99Ms, 86400001); assert.equal found.p999Ms, 86400001
+    assert.deepEqual [found.overSecond, found.overMinute, found.overHour, found.overDay], [7, 5, 3, 1]
+    assert.equal report.groups.filter((g) => g.outcome is 'found')#, 3
+    assert.equal report.totals.find((g) => g.outcome is 'timeout')!.count, 1
+    assert.equal report.totals.find((g) => g.outcome is 'found/node-limit')!.count, 1
+    assert.equal(report.missingTimes, 1); assert.equal report.unreadable, 1
+    assert.equal summarizeTimings(directory, true, true).groups#, 7
+    text := formatTimings report
+    assert.match text, /Min.*Median.*P99\.9.*Max.*>1s.*>1d/
+    assert.match text, /TOTAL/
+    result := cli ['timings', directory, '--json', '--include-timeouts']
+    assert.equal result.status, 0, String result.stderr
+    assert.deepEqual JSON.parse(String result.stdout), JSON.parse JSON.stringify report
+    multi := run 'multi', sourceDirectories: [source], [5]
+    writeFileSync join(multi, 'trials.jsonl'), JSON.stringify file: 'trial-0.json', sourceFile: join(source, 'trial-0.json'), status: 'found', elapsedMs: 5
+    inherited := summarizeTimings(multi).groups[0]
+    assert.equal(inherited.dimension, 4); assert.equal inherited.points, 8
+    assert.equal inherited.parameters.distribution, 'sphere'
+    empty := join(directory, 'empty'); mkdirSync empty
+    assert.match formatTimings(summarizeTimings empty), /No recorded search timings/;
+  finally
+    rmSync directory, recursive: true, force: true
 
-test('node distributions read journals and fallback files without requiring timings', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-nodes-test-'));
-  try {
-    writeFileSync(join(directory, 'run.json'), JSON.stringify({generator: {family: 'random', dimension: 4, count: 9}}));
-    const values = [0, 1000, 1001, 1000000, 1000001, 1000000000, 1000000001, 1.5, null];
-    const rows = values.map((nodes, i) => {
-      const file = `trial-${i}.json`;
-      writeFileSync(join(directory, file), 'indexed file must not be parsed');
-      return {file, status: 'found', nodes};
-    });
-    writeFileSync(join(directory, 'trials.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n'));
-    writeFileSync(join(directory, 'trial-fallback.json'), JSON.stringify({result: {status: 'found', stats: {nodes: 2}}}));
-    writeFileSync(join(directory, 'trial-cutoff.json'), JSON.stringify({result: {status: 'inconclusive', termination: 'timeout', stats: {nodes: 99}}}));
-    const report = summarizeTimings(directory, false, false, true), total = report.totals[0];
-    assert.equal(report.metric, 'nodes');
-    assert.ok('minNodes' in total);
-    assert.equal(total.count, 8); assert.equal(total.minNodes, 0); assert.equal(total.maxNodes, 1000000001);
-    assert.equal(total.medianNodes, 1001);
-    assert.deepEqual([total.overThousand, total.overMillion, total.overBillion], [5, 3, 1]);
-    assert.equal(report.missingNodes, 2); assert.equal(report.omittedTimeouts, 1);
-    assert.ok(not ('minMs' in total));
-    assert.match(formatTimings(report), /Min.*Median.*Max.*>1K.*>1M.*>1B/);
-    const result = cli(['timings', directory, '--nodes', '--json']);
-    assert.equal(result.status, 0, String(result.stderr));
-    assert.deepEqual(JSON.parse(String(result.stdout)), JSON.parse(JSON.stringify(report)));
-    assert.equal(summarizeTimings(directory, false, true, true).totals.length, 2);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-})
 
-test('summary checks local worker PIDs and leaves legacy or foreign workers unknown', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-worker-test-'));
-  try {
-    const exited = spawnSync(process.execPath, ['-e', '']);
-    assert.equal(exited.status, 0);
-    const examples = [
-      {name: 'live', worker: {pid: process.pid, hostname: hostname()}, state: 'running'},
-      {name: 'dead', worker: {pid: exited.pid, hostname: hostname()}, state: 'interrupted'},
-      {name: 'foreign', worker: {pid: process.pid, hostname: hostname() + '-other'}, state: 'unknown'},
-      {name: 'legacy', worker: undefined, state: 'unknown'},
-      {name: 'invalid', worker: {pid: -1, hostname: hostname()}, state: 'unknown'},
-      {name: 'done', worker: {pid: process.pid, hostname: hostname()}, state: 'finished'}
-    ];
-    for (const example of examples) {
-      const run = join(directory, example.name); mkdirSync(run);
-      writeFileSync(join(run, 'run.json'), JSON.stringify({trials: 1, worker: example.worker}));
-      if (example.state is 'finished') writeFileSync(join(run, 'summary.json'), '{}');
-    }
-    const report = summarizeResults(directory);
-    for (const example of examples) assert.equal(report.runs.find((r) => r.directory is join(directory, example.name))!.state, example.state);
-    assert.match(formatSummary(report), /running \(PID/);
-    assert.match(formatSummary(report), /interrupted/);
-    assert.match(formatSummary(report), /unknown/);
-    assert.doesNotMatch(formatSummary(report), /unfinished/);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+test 'node distributions read journals and fallback files without requiring timings', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-nodes-test-'
+  try
+    writeFileSync join(directory, 'run.json'), JSON.stringify generator: family: 'random', dimension: 4, count: 9
+    values := [0, 1000, 1001, 1000000, 1000001, 1000000000, 1000000001, 1.5, null]
+    rows := values.map (nodes, i) =>
+      file := `trial-${i}.json`
+      writeFileSync join(directory, file), 'indexed file must not be parsed'
+      {file, status: 'found', nodes}
 
-test('summary aggregates nested and unfinished runs without trusting stale totals', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-test-'));
-  const write = (path: string, value: unknown): void => writeFileSync(path, JSON.stringify(value))
-  try {
-    const a = join(directory, 'run-a');
-    const b = join(directory, 'nested', 'retry-b');
-    const c = join(directory, 'run-empty');
-    for (const path of [a, b, c]) mkdirSync(path, {recursive: true});
-    write(join(a, 'run.json'), {trials: 5, generator: {dimension: 4, count: 8}});
-    write(join(a, 'summary.json'), {found: 999});
-    write(join(a, 'trial-a.json'), {result: {status: 'found'}});
-    write(join(a, 'trial-b.json'), {result: {status: 'inconclusive', termination: 'timeout', stats: {elapsedMs: 10}}});
-    write(join(a, 'trial-c.json'), {result: {status: 'no-unfolding', stats: {elapsedMs: 20}}});
-    write(join(a, 'trial-d.json'), {error: 'hull failed'});
-    writeFileSync(join(a, 'trial-e.json'), '{incomplete');
-    const row = {file: 'trial-a.json', status: 'found', elapsedMs: 5};
-    writeFileSync(join(a, 'trials.jsonl'), [JSON.stringify(row), JSON.stringify(row), JSON.stringify({...row, file: 'trial-not-saved.json'}), '{incomplete'].join('\n'));
-    write(join(b, 'run.json'), {command: 'retry', trials: 2, sourceDirectory: a});
-    write(join(b, 'trial-b.json'), {sourceFile: join(a, 'trial-b.json'), result: {status: 'found', stats: {elapsedMs: 30}}});
-    write(join(c, 'run.json'), {trials: 3});
-    const report = summarizeResults(directory);
-    assert.equal(report.runs.length, 3);
-    assert.deepEqual(report.totals, {trials: 6, found: 2, candidates: 1, inconclusive: 1, errors: 1, unreadable: 1, timeouts: 1, nodeLimits: 0, searchMs: 65});
-    assert.equal(report.runs.find((r) => r.directory is a)!.dimension, 4);
-    assert.equal(report.runs.find((r) => r.directory is a)!.finished, true);
-    assert.equal(report.runs.find((r) => r.directory is b)!.remaining, 1);
-    assert.equal(report.runs.find((r) => r.directory is b)!.finished, false);
-    assert.equal(report.runs.find((r) => r.directory is c)!.trials, 0);
-    assert.equal(report.warnings.length, 2);
-    assert.equal(summarizeResults(b).totals.trials, 1);
-    assert.match(formatSummary(report), /6 saved attempts \(retries counted separately\)/);
-    const text = cli(['summary', directory]);
-    assert.equal(text.status, 0, String(text.stderr));
-    assert.equal(String(text.stdout), formatSummary(report));
-    const json = cli(['summary', directory, '--json']);
-    assert.equal(json.status, 0, String(json.stderr));
-    assert.deepEqual(JSON.parse(String(json.stdout)), report);
-    const output = join(directory, 'report.json');
-    const exported = cli(['summary', directory, '--json', '--output', output]);
-    assert.equal(exported.status, 0, String(exported.stderr));
-    assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')), report);
-    const empty = join(directory, 'empty');
-    mkdirSync(empty);
-    assert.equal(summarizeResults(empty).runs.length, 0);
-    assert.equal(cli(['summary', directory, '--max-nodes', '0']).status, 1);
-    assert.equal(cli(['summary', join(directory, 'missing')]).status, 1);
-  } finally {
+    writeFileSync join(directory, 'trials.jsonl'), rows.map(JSON.stringify(.)).join '\n'
+    writeFileSync join(directory, 'trial-fallback.json'), JSON.stringify result: status: 'found', stats: nodes: 2
+    writeFileSync join(directory, 'trial-cutoff.json'), JSON.stringify result: status: 'inconclusive', termination: 'timeout', stats: nodes: 99
+    report := summarizeTimings(directory, false, false, true); total := report.totals[0]
+    assert.equal report.metric, 'nodes'
+    assert.ok 'minNodes' in total
+    assert.equal(total.count, 8); assert.equal(total.minNodes, 0); assert.equal total.maxNodes, 1000000001
+    assert.equal total.medianNodes, 1001
+    assert.deepEqual [total.overThousand, total.overMillion, total.overBillion], [5, 3, 1]
+    assert.equal(report.missingNodes, 2); assert.equal report.omittedTimeouts, 1
+    assert.ok not ('minMs' in total)
+    assert.match formatTimings(report), /Min.*Median.*Max.*>1K.*>1M.*>1B/
+    result := cli ['timings', directory, '--nodes', '--json']
+    assert.equal result.status, 0, String result.stderr
+    assert.deepEqual JSON.parse(String result.stdout), JSON.parse JSON.stringify report
+    assert.equal summarizeTimings(directory, false, true, true).totals#, 2;
+  finally
+    rmSync directory, recursive: true, force: true
+
+
+test 'summary checks local worker PIDs and leaves legacy or foreign workers unknown', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-worker-test-'
+  try
+    exited := spawnSync process.execPath, ['-e', '']
+    assert.equal exited.status, 0
+    examples := [
+      name: 'live', worker: {process.pid, hostname: hostname()}, state: 'running'
+      {name: 'dead', worker: {exited.pid, hostname: hostname()}, state: 'interrupted'}
+      name: 'foreign', worker: {process.pid, hostname: hostname() + '-other'}, state: 'unknown'
+      {name: 'legacy', worker: undefined, state: 'unknown'}
+      name: 'invalid', worker: {pid: -1, hostname: hostname()}, state: 'unknown'
+      {name: 'done', worker: {process.pid, hostname: hostname()}, state: 'finished'}
+    ]
+    for example of examples
+      run := join(directory, example.name); mkdirSync run
+      writeFileSync join(run, 'run.json'), JSON.stringify trials: 1, worker: example.worker
+      writeFileSync join(run, 'summary.json'), '{}' if example.state is 'finished'
+    report := summarizeResults directory
+    for (example of examples) assert.equal report.runs.find((r) => r.directory is join directory, example.name)!.state, example.state
+    assert.match formatSummary(report), /running \(PID/
+    assert.match formatSummary(report), /interrupted/
+    assert.match formatSummary(report), /unknown/
+    assert.doesNotMatch formatSummary(report), /unfinished/;
+  finally
+    rmSync directory, recursive: true, force: true
+
+
+test 'summary aggregates nested and unfinished runs without trusting stale totals', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-summary-test-'
+
+  function write(path: string, value: unknown): void
+    writeFileSync path, JSON.stringify value
+  try
+    a := join directory, 'run-a'
+    b := join directory, 'nested', 'retry-b'
+    c := join directory, 'run-empty'
+    for (path of [a, b, c]) mkdirSync path, recursive: true
+    write join(a, 'run.json'), trials: 5, generator: dimension: 4, count: 8
+    write join(a, 'summary.json'), found: 999
+    write join(a, 'trial-a.json'), result: status: 'found'
+    write join(a, 'trial-b.json'), result: status: 'inconclusive', termination: 'timeout', stats: elapsedMs: 10
+    write join(a, 'trial-c.json'), result: status: 'no-unfolding', stats: elapsedMs: 20
+    write join(a, 'trial-d.json'), error: 'hull failed'
+    writeFileSync join(a, 'trial-e.json'), '{incomplete'
+    row := file: 'trial-a.json', status: 'found', elapsedMs: 5
+    writeFileSync join(a, 'trials.jsonl'), [JSON.stringify(row), JSON.stringify(row), JSON.stringify({...row, file: 'trial-not-saved.json'}), '{incomplete'].join '\n'
+    write join(b, 'run.json'), command: 'retry', trials: 2, sourceDirectory: a
+    write join(b, 'trial-b.json'), sourceFile: join(a, 'trial-b.json'), result: status: 'found', stats: elapsedMs: 30
+    write join(c, 'run.json'), trials: 3
+    report := summarizeResults directory
+    assert.equal report.runs#, 3
+    assert.deepEqual report.totals, trials: 6, found: 2, candidates: 1, inconclusive: 1, errors: 1, unreadable: 1, timeouts: 1, nodeLimits: 0, searchMs: 65
+    assert.equal report.runs.find((r) => r.directory is a)!.dimension, 4
+    assert.equal report.runs.find((r) => r.directory is a)!.finished, true
+    assert.equal report.runs.find((r) => r.directory is b)!.remaining, 1
+    assert.equal report.runs.find((r) => r.directory is b)!.finished, false
+    assert.equal report.runs.find((r) => r.directory is c)!.trials, 0
+    assert.equal report.warnings#, 2
+    assert.equal summarizeResults(b).totals.trials, 1
+    assert.match formatSummary(report), /6 saved attempts \(retries counted separately\)/
+    text := cli ['summary', directory]
+    assert.equal text.status, 0, String text.stderr
+    assert.equal String(text.stdout), formatSummary report
+    json := cli ['summary', directory, '--json']
+    assert.equal json.status, 0, String json.stderr
+    assert.deepEqual JSON.parse(String json.stdout), report
+    output := join directory, 'report.json'
+    exported := cli ['summary', directory, '--json', '--output', output]
+    assert.equal exported.status, 0, String exported.stderr
+    assert.deepEqual JSON.parse(readFileSync output, 'utf8'), report
+    empty := join directory, 'empty'
+    mkdirSync empty
+    assert.equal summarizeResults(empty).runs#, 0
+    assert.equal cli(['summary', directory, '--max-nodes', '0']).status, 1
+    assert.equal cli(['summary', join directory, 'missing']).status, 1;
+  finally
     // Fresh mkdtemp directory owned by this test.
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+    rmSync directory, recursive: true, force: true
 
-test('summary resolves retry parameters from tasks and source metadata without trial reads', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-summary-'));
-  try {
-    const make = (name: string, metadata: object): string => {
-      const path = join(directory, name); mkdirSync(path);
-      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
-      return path;
-    };
-    const original = make('original', {command: 'search', generator: {dimension: 4, count: 10}, trials: 1});
-    const tasks = make('tasks', {command: 'retry', trials: 2, tasks: [
-      {name: 'trial-a.json', generator: {dimension: 4, count: 10}},
-      {name: 'trial-b.json', generator: {dimension: 4, count: 10}}
-    ]});
-    writeFileSync(join(tasks, 'trial-a.json'), 'intentionally not parsed');
-    writeFileSync(join(tasks, 'trials.jsonl'), JSON.stringify({file: 'trial-a.json', status: 'found'}) + '\n');
-    const legacy = make('legacy', {command: 'retry', sourceDirectory: original});
-    make('chain', {command: 'retry', sourceDirectories: [legacy, tasks]});
-    make('files', {command: 'retry', sourceFiles: [join(original, 'trial-missing.json')]});
-    make('mixed', {command: 'retry', tasks: [{generator: {dimension: 4, count: 10}}, {generator: {dimension: 4, count: 11}}]});
-    make('unknown', {command: 'retry', tasks: [{generator: {dimension: 4, count: 10}}, {}]});
-    make('cycle', {command: 'retry', sourceDirectory: join(directory, 'cycle')});
-    const summary = summarizeResults(directory);
-    for (const name of ['original', 'tasks', 'legacy', 'chain', 'files']) {
-      const row = summary.runs.find((r) => r.directory is join(directory, name))!;
-      assert.equal(row.dimension, 4, name); assert.equal(row.points, 10, name);
-    }
-    const mixed = summary.runs.find((r) => r.directory is join(directory, 'mixed'))!;
-    assert.equal(mixed.dimension, 4); assert.equal(mixed.points, null);
-    for (const name of ['unknown', 'cycle']) {
-      const row = summary.runs.find((r) => r.directory is join(directory, name))!;
-      assert.equal(row.dimension, null); assert.equal(row.points, null);
-    }
-    assert.equal(summary.groups.find((g) => g.dimension is 4 and g.points is 10)!.runCount, 5);
-    assert.equal(summary.totals.found, 1); assert.equal(summary.totals.unreadable, 0);
-    assert.deepEqual(summary.warnings, []);
-  } finally { rmSync(directory, {recursive: true, force: true}); }
-});
 
-test('summary tracks completed retry chains, missing seeds, duplicates, and partial coverage', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-coverage-test-'));
-  try {
-    const make = (name: string, metadata: object): string => {
-      const path = join(directory, name); mkdirSync(path);
-      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata));
-      return path;
-    };
-    const record = (directory: string, file: string, status: string, sourceFile?: string): void => {
+test 'summary resolves retry parameters from tasks and source metadata without trial reads', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-retry-summary-'
+  try
+    function make(name: string, metadata: object): string
+      path := join(directory, name); mkdirSync path
+      writeFileSync join(path, 'run.json'), JSON.stringify metadata
+      path
+    original := make 'original', command: 'search', generator: {dimension: 4, count: 10}, trials: 1
+    tasks := make 'tasks', {command: 'retry', trials: 2, tasks: [
+      name: 'trial-a.json', generator: dimension: 4, count: 10
+      {name: 'trial-b.json', generator: dimension: 4, count: 10}
+    ]}
+    writeFileSync join(tasks, 'trial-a.json'), 'intentionally not parsed'
+    writeFileSync join(tasks, 'trials.jsonl'), JSON.stringify(file: 'trial-a.json', status: 'found') + '\n'
+    legacy := make 'legacy', command: 'retry', sourceDirectory: original
+    make 'chain', command: 'retry', sourceDirectories: [legacy, tasks]
+    make 'files', command: 'retry', sourceFiles: [join original, 'trial-missing.json']
+    make 'mixed', command: 'retry', tasks: [generator: dimension: 4, count: 10, {generator: dimension: 4, count: 11}]
+    make 'unknown', command: 'retry', tasks: [generator: dimension: 4, count: 10, {}]
+    make 'cycle', command: 'retry', sourceDirectory: join directory, 'cycle'
+    summary := summarizeResults directory
+    for name of ['original', 'tasks', 'legacy', 'chain', 'files']
+      row := summary.runs.find((r) => r.directory is join directory, name)!
+      assert.equal(row.dimension, 4, name); assert.equal row.points, 10, name
+    mixed := summary.runs.find((r) => r.directory is join directory, 'mixed')!
+    assert.equal(mixed.dimension, 4); assert.equal mixed.points, null
+    for name of ['unknown', 'cycle']
+      row := summary.runs.find((r) => r.directory is join directory, name)!
+      assert.equal(row.dimension, null); assert.equal row.points, null
+    assert.equal summary.groups.find((g) => g.dimension is 4 and g.points is 10)!.runCount, 5
+    assert.equal(summary.totals.found, 1); assert.equal summary.totals.unreadable, 0
+    assert.deepEqual summary.warnings, [];
+  finally
+    rmSync directory, {recursive: true, force: true}
+
+
+
+test 'summary tracks completed retry chains, missing seeds, duplicates, and partial coverage', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-coverage-test-'
+  try
+    function make(name: string, metadata: object): string
+      path := join(directory, name); mkdirSync path
+      writeFileSync join(path, 'run.json'), JSON.stringify metadata
+      path
+
+    function record(directory: string, file: string, status: string, sourceFile?: string): void
       // Only the journal may be read; geometry is deliberately unavailable.
-      writeFileSync(join(directory, file), 'not coordinate JSON');
-      const path = join(directory, 'trials.jsonl');
-      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file, status, sourceFile}) + '\n');
-    };
-    const original = make('original', {command: 'search', seed: 10, trials: 4, generator: {family: 'random', dimension: 4, count: 10}});
-    const names = [0, 1, 2, 3].map((i) => trialName(i, 10 + i));
-    record(original, names[0], 'found'); record(original, names[1], 'inconclusive');
-    const first = make('first', {command: 'retry', trials: 3, tasks: names.slice(1).map((name) => ({name, sourceFile: join(original, name)}))});
-    record(first, names[1], 'inconclusive', join(original, names[1]));
-    const later = make('later', {command: 'retry', trials: 3, tasks: [
-      {name: 'trial-a.json', sourceFile: join(first, names[1])},
+      writeFileSync join(directory, file), 'not coordinate JSON'
+      path := join directory, 'trials.jsonl'
+      writeFileSync path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file, status, sourceFile}) + '\n'
+    original := make 'original', command: 'search', seed: 10, trials: 4, generator: family: 'random', dimension: 4, count: 10
+    names := [0, 1, 2, 3].map (i) => trialName i, 10 + i
+    record(original, names[0], 'found'); record original, names[1], 'inconclusive'
+    first := make 'first', command: 'retry', trials: 3, tasks: names[>=1].map (name) => {name, sourceFile: join original, name}
+    record first, names[1], 'inconclusive', join original, names[1]
+    later := make 'later', {command: 'retry', trials: 3, tasks: [
+      name: 'trial-a.json', sourceFile: join first, names[1]
       // Resume the original source directly, bypassing the interrupted retry.
-      {name: 'trial-b.json', sourceFile: join(original, names[2])},
-      {name: 'trial-c.json', sourceFile: join(original, names[3])}
-    ]});
-    record(later, 'trial-a.json', 'found'); record(later, 'trial-b.json', 'no-unfolding');
-    record(later, 'trial-c.json', 'error');
-    const duplicate = make('duplicate', {command: 'retry', trials: 1, sourceFiles: [join(original, names[1])]});
-    record(duplicate, names[1], 'found');
-    const unrelated = make('unrelated', {command: 'search', seed: 10, trials: 4, generator: {family: 'random', dimension: 4, count: 10}});
-    record(unrelated, names[3], 'found');
-    let report = summarizeResults(directory);
-    const coverage = (path: string) => report.runs.find((run) => run.directory is path)!.retryCoverage
-    assert.equal(coverage(original).resolved, 3); assert.equal(coverage(original).viaRetries, 2);
-    assert.equal(coverage(original).remaining, 1); assert.equal(coverage(original).complete, false);
-    assert.deepEqual(coverage(original).directories, [duplicate, later].sort());
-    assert.equal(coverage(first).viaRetries, 2); assert.equal(coverage(first).remaining, 1);
-    assert.equal(coverage(unrelated).viaRetries, 0);
-    assert.equal(report.totals.unreadable, 0);
-    assert.match(formatSummary(report), /partial \(\+2; 1 left\)/);
+      {name: 'trial-b.json', sourceFile: join original, names[2]}
+      name: 'trial-c.json', sourceFile: join original, names[3]
+    ]}
+    record(later, 'trial-a.json', 'found'); record later, 'trial-b.json', 'no-unfolding'
+    record later, 'trial-c.json', 'error'
+    duplicate := make 'duplicate', command: 'retry', trials: 1, sourceFiles: [join original, names[1]]
+    record duplicate, names[1], 'found'
+    unrelated := make 'unrelated', command: 'search', seed: 10, trials: 4, generator: family: 'random', dimension: 4, count: 10
+    record unrelated, names[3], 'found'
+    report .= summarizeResults directory
+
+    function coverage(path: string)
+      report.runs.find((run) => run.directory is path)!.retryCoverage
+    assert.equal(coverage(original).resolved, 3); assert.equal coverage(original).viaRetries, 2
+    assert.equal(coverage(original).remaining, 1); assert.equal coverage(original).complete, false
+    assert.deepEqual coverage(original).directories, [duplicate, later].sort()
+    assert.equal(coverage(first).viaRetries, 2); assert.equal coverage(first).remaining, 1
+    assert.equal coverage(unrelated).viaRetries, 0
+    assert.equal report.totals.unreadable, 0
+    assert.match formatSummary(report), /partial \(\+2; 1 left\)/
     // A journal entry without its trial file cannot complete missing work.
-    writeFileSync(join(later, 'trials.jsonl'), readFileSync(join(later, 'trials.jsonl'), 'utf8') + JSON.stringify({file: 'trial-absent.json', status: 'found', sourceFile: join(original, names[3])}) + '\n');
-    assert.equal(summarizeResults(directory).runs.find((run) => run.directory is original)!.retryCoverage.complete, false);
-    record(later, 'trial-c.json', 'found');
-    report = summarizeResults(directory);
-    assert.equal(coverage(original).complete, true); assert.equal(coverage(original).viaRetries, 3);
-    assert.equal(coverage(first).complete, true); assert.equal(coverage(first).viaRetries, 3);
-    assert.equal(report.runs.find((run) => run.directory is original)!.finished, false);
-    assert.equal(report.runs.find((run) => run.directory is original)!.inconclusive, 1);
-    assert.match(formatSummary(report), /complete \(\+3; 0 left\)/);
+    writeFileSync join(later, 'trials.jsonl'), readFileSync(join(later, 'trials.jsonl'), 'utf8') + JSON.stringify(file: 'trial-absent.json', status: 'found', sourceFile: join original, names[3]) + '\n'
+    assert.equal summarizeResults(directory).runs.find((run) => run.directory is original)!.retryCoverage.complete, false
+    record later, 'trial-c.json', 'found'
+    report = summarizeResults directory
+    assert.equal(coverage(original).complete, true); assert.equal coverage(original).viaRetries, 3
+    assert.equal(coverage(first).complete, true); assert.equal coverage(first).viaRetries, 3
+    assert.equal report.runs.find((run) => run.directory is original)!.finished, false
+    assert.equal report.runs.find((run) => run.directory is original)!.inconclusive, 1
+    assert.match formatSummary(report), /complete \(\+3; 0 left\)/
     // Restricting the scan cannot claim coverage from unscanned siblings.
-    assert.equal(summarizeResults(original).runs[0].retryCoverage.viaRetries, 0);
-  } finally { rmSync(directory, {recursive: true, force: true}); }
-});
+    assert.equal summarizeResults(original).runs[0].retryCoverage.viaRetries, 0;
+  finally
+    rmSync directory, {recursive: true, force: true}
 
-test('summary diagnoses live retry assignments without marking them resolved or widening the table', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-live-coverage-'));
-  try {
-    const make = (name: string, metadata: object): string => {
-      const path = join(directory, name); mkdirSync(path);
-      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata)); return path;
-    };
-    const record = (directory: string, name: string, status: string): void => {
-      writeFileSync(join(directory, name), 'journal is sufficient');
-      const path = join(directory, 'trials.jsonl');
-      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status}) + '\n');
-    };
-    const source = make('source', {command: 'search', trials: 5, seed: 0, generator: {family: 'random', dimension: 2, count: 3}});
-    const names = [0, 1, 2, 3, 4].map((i) => trialName(i, i));
-    const worker = {hostname: hostname(), pid: process.pid};
-    const tasks = names.slice(1).map((name) => ({name, sourceFile: join(source, name)}));
-    const first = make('first', {command: 'retry', trials: 4, tasks, worker});
-    const second = make('second', {command: 'retry', trials: 1, tasks: [tasks[0]], worker});
-    make('foreign', {command: 'retry', trials: 1, tasks: [tasks[1]], worker: {...worker, hostname: 'other-host'}});
-    const finished = make('finished', {command: 'retry', trials: 1, tasks: [tasks[1]], worker});
-    writeFileSync(join(finished, 'summary.json'), '{}');
-    record(source, names[0], 'found');
-    record(first, names[2], 'inconclusive'); record(first, names[3], 'found');
-    let report = summarizeResults(directory);
-    let coverage = report.runs.find((run) => run.directory is source)!.retryCoverage;
-    assert.equal(coverage.remaining, 3); assert.equal(coverage.inProgress, 2);
-    assert.equal(coverage.unassigned, 1); assert.equal(coverage.duplicateAssignments, 1);
-    assert.deepEqual(coverage.workers, [{directory: first, pid: process.pid, trials: 2}, {directory: second, pid: process.pid, trials: 1}]);
-    assert.match(formatSummary(report), /partial \(\+1; 1 left, 2 running\)/);
-    assert.ok(not formatSummary(report).includes('Running retries'));
-    record(second, names[1], 'found'); record(first, names[2], 'found');
-    let consideredResolved = true;
-    report = summarizeResults(directory, undefined, (runs, links) => {
-      consideredResolved = retryCoverage(runs, links).isResolved(join(source, names[4]));
-    });
-    coverage = report.runs.find((run) => run.directory is source)!.retryCoverage;
-    assert.equal(coverage.remaining, 1); assert.equal(coverage.inProgress, 1);
-    assert.equal(coverage.unassigned, 0); assert.equal(coverage.duplicateAssignments, 0);
-    assert.equal(consideredResolved, false);
-    assert.match(formatSummary(report), /partial \(\+3; 1 running\)/);
-    assert.equal(summarizeResults(source).runs[0].retryCoverage.inProgress, 0);
-    writeFileSync(join(first, 'summary.json'), '{}');
-    assert.equal(summarizeResults(directory).runs.find((run) => run.directory is source)!.retryCoverage.inProgress, 0);
-  } finally { rmSync(directory, {recursive: true, force: true}); }
-});
 
-test('summary sorts numeric parameters, aggregates matching runs, and puts totals below groups', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-summary-groups-'));
-  try {
-    const fixtures = [
-      {name: 'a-ten', dimension: 10, points: 8, planned: 2, status: 'no-unfolding'},
-      {name: 'b-twelve', dimension: 4, points: 12, planned: 2, status: 'found'},
-      {name: 'c-unknown', dimension: null, points: null, planned: null, status: 'found'},
-      {name: 'd-unknown-points', dimension: 4, points: null, planned: 2, status: 'found'},
-      {name: 'z-eight-b', dimension: 4, points: 8, planned: 4, status: 'inconclusive'},
+
+test 'summary diagnoses live retry assignments without marking them resolved or widening the table', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-live-coverage-'
+  try
+    function make(name: string, metadata: object): string
+      path := join(directory, name); mkdirSync path
+      writeFileSync(join(path, 'run.json'), JSON.stringify metadata); path
+
+    function record(directory: string, name: string, status: string): void
+      writeFileSync join(directory, name), 'journal is sufficient'
+      path := join directory, 'trials.jsonl'
+      writeFileSync path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status}) + '\n'
+    source := make 'source', command: 'search', trials: 5, seed: 0, generator: family: 'random', dimension: 2, count: 3
+    names := [0, 1, 2, 3, 4].map (i) => trialName i, i
+    worker := hostname: hostname(), pid: process.pid
+    tasks := names[>=1].map (name) => {name, sourceFile: join source, name}
+    first := make 'first', {command: 'retry', trials: 4, tasks, worker}
+    second := make 'second', {command: 'retry', trials: 1, tasks: [tasks[0]], worker}
+    make 'foreign', command: 'retry', trials: 1, tasks: [tasks[1]], worker: {...worker, hostname: 'other-host'}
+    finished := make 'finished', {command: 'retry', trials: 1, tasks: [tasks[1]], worker}
+    writeFileSync join(finished, 'summary.json'), '{}'
+    record source, names[0], 'found'
+    record(first, names[2], 'inconclusive'); record first, names[3], 'found'
+    report .= summarizeResults directory
+    coverage .= report.runs.find((run) => run.directory is source)!.retryCoverage
+    assert.equal(coverage.remaining, 3); assert.equal coverage.inProgress, 2
+    assert.equal(coverage.unassigned, 1); assert.equal coverage.duplicateAssignments, 1
+    assert.deepEqual coverage.workers, [directory: first, pid: process.pid, trials: 2, {directory: second, process.pid, trials: 1}]
+    assert.match formatSummary(report), /partial \(\+1; 1 left, 2 running\)/
+    assert.ok 'Running retries' is not in formatSummary report
+    record(second, names[1], 'found'); record first, names[2], 'found'
+    consideredResolved .= true
+    report = summarizeResults directory, undefined, (runs, links) =>
+      consideredResolved = retryCoverage(runs, links).isResolved join source, names[4];
+
+    coverage = report.runs.find((run) => run.directory is source)!.retryCoverage
+    assert.equal(coverage.remaining, 1); assert.equal coverage.inProgress, 1
+    assert.equal(coverage.unassigned, 0); assert.equal coverage.duplicateAssignments, 0
+    assert.equal consideredResolved, false
+    assert.match formatSummary(report), /partial \(\+3; 1 running\)/
+    assert.equal summarizeResults(source).runs[0].retryCoverage.inProgress, 0
+    writeFileSync join(first, 'summary.json'), '{}'
+    assert.equal summarizeResults(directory).runs.find((run) => run.directory is source)!.retryCoverage.inProgress, 0;
+  finally
+    rmSync directory, {recursive: true, force: true}
+
+
+
+test 'summary sorts numeric parameters, aggregates matching runs, and puts totals below groups', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-summary-groups-'
+  try
+    fixtures := [
+      name: 'a-ten', dimension: 10, points: 8, planned: 2, status: 'no-unfolding'
+      {name: 'b-twelve', dimension: 4, points: 12, planned: 2, status: 'found'}
+      name: 'c-unknown', dimension: null, points: null, planned: null, status: 'found'
+      {name: 'd-unknown-points', dimension: 4, points: null, planned: 2, status: 'found'}
+      name: 'z-eight-b', dimension: 4, points: 8, planned: 4, status: 'inconclusive'
       {name: 'z-eight-a', dimension: 4, points: 8, planned: 3, status: 'found'}
-    ];
-    for (const f of fixtures) {
-      const run = join(directory, f.name);
-      mkdirSync(run);
-      writeFileSync(join(run, 'run.json'), JSON.stringify({trials: f.planned, generator: {dimension: f.dimension, count: f.points}}));
-      writeFileSync(join(run, 'trial-0.json'), JSON.stringify({result: {status: f.status, termination: f.status is 'inconclusive' ? 'maxNodes' : 'exhausted', stats: {elapsedMs: 10}}}));
-      if (f.name is 'z-eight-a') writeFileSync(join(run, 'summary.json'), '{}');
-    }
-    const report = summarizeResults(directory);
-    assert.deepEqual(report.runs.map((r) => r.directory), ['z-eight-a', 'z-eight-b', 'b-twelve', 'd-unknown-points', 'a-ten', 'c-unknown'].map((name) => join(directory, name)));
-    assert.equal(report.groups.length, 5);
-    assert.deepEqual(report.groups[0], {dimension: 4, points: 8, runCount: 2, finishedRuns: 1, expected: 7, remaining: 5,
-      trials: 2, found: 1, candidates: 0, inconclusive: 1, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 1, searchMs: 20});
-    assert.equal(report.totals.trials, 6);
-    assert.equal(report.totals.found, 4);
-    assert.equal(report.totals.candidates, 1);
-    const text = formatSummary(report);
-    const subtotal = text.indexOf('Subtotal (2 runs)');
-    assert.ok(subtotal > text.indexOf('z-eight-b') and subtotal < text.indexOf('b-twelve'));
-    assert.equal(text.match(/Subtotal/g)!.length, 1);
-    const total = text.split('\n').find((line) => line.startsWith('TOTAL'))!;
-    const lines = text.split('\n');
-    const header = lines.find((line) => line.startsWith('Run '))!;
-    assert.equal(lines[lines.indexOf(total) - 1], header);
-    assert.match(total, /6\/\?/);
-    assert.ok(text.indexOf('TOTAL') > text.indexOf('c-unknown'));
-    assert.ok(not formatSummary(summarizeResults(join(directory, 'z-eight-a'))).includes('Subtotal'));
-    const empty = join(directory, 'empty');
-    mkdirSync(empty);
-    assert.deepEqual(summarizeResults(empty).groups, []);
-    assert.match(formatSummary(summarizeResults(empty)), /TOTAL.*0\/0/);
-  } finally {
+    ]
+    for f of fixtures
+      run := join directory, f.name
+      mkdirSync run
+      writeFileSync join(run, 'run.json'), JSON.stringify trials: f.planned, generator: dimension: f.dimension, count: f.points
+      writeFileSync join(run, 'trial-0.json'), JSON.stringify result: status: f.status, termination: f.status is 'inconclusive' ? 'maxNodes' : 'exhausted', stats: elapsedMs: 10
+      writeFileSync join(run, 'summary.json'), '{}' if f.name is 'z-eight-a'
+    report := summarizeResults directory
+    assert.deepEqual report.runs.map(.directory), ['z-eight-a', 'z-eight-b', 'b-twelve', 'd-unknown-points', 'a-ten', 'c-unknown'].map join directory, .
+    assert.equal report.groups#, 5
+    assert.deepEqual report.groups[0], {dimension: 4, points: 8, runCount: 2, finishedRuns: 1, expected: 7, remaining: 5,
+      trials: 2, found: 1, candidates: 0, inconclusive: 1, errors: 0, unreadable: 0, timeouts: 0, nodeLimits: 1, searchMs: 20}
+    assert.equal report.totals.trials, 6
+    assert.equal report.totals.found, 4
+    assert.equal report.totals.candidates, 1
+    text := formatSummary report
+    subtotal := text.indexOf 'Subtotal (2 runs)'
+    assert.ok subtotal > text.indexOf('z-eight-b') and subtotal < text.indexOf 'b-twelve'
+    assert.equal text.match(/Subtotal/g)!#, 1
+    total := text.split('\n').find((line) => line.startsWith 'TOTAL')!
+    lines := text.split '\n'
+    header := lines.find((line) => line.startsWith 'Run ')!
+    assert.equal lines[lines.indexOf(total) - 1], header
+    assert.match total, /6\/\?/
+    assert.ok text.indexOf('TOTAL') > text.indexOf 'c-unknown'
+    assert.ok 'Subtotal' is not in formatSummary summarizeResults join directory, 'z-eight-a'
+    empty := join directory, 'empty'
+    mkdirSync empty
+    assert.deepEqual summarizeResults(empty).groups, []
+    assert.match formatSummary(summarizeResults empty), /TOTAL.*0\/0/;
+  finally
     // Fresh mkdtemp directory owned by this test.
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+    rmSync directory, recursive: true, force: true
 
-test('retry fills gaps, skips attempted trials, and resumes an interrupted retry manifest', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-resume-test-'));
-  try {
-    const source = join(directory, 'source');
-    mkdirSync(source);
-    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 4, seed: 10, distribution: 'sphere', scales: [2, .5]};
-    const hullOptions = {tolerance: 1e-8, maxCombinations: 100};
-    const solveOptions = {root: 0, maxNodes: 0, timeoutMs: 10000};
-    writeFileSync(join(source, 'run.json'), JSON.stringify({trials: 5, seed: 10, generator, hullOptions, solveOptions}));
-    for (const [index, status] of [[0, 'found'], [2, 'inconclusive'], [3, 'error']] as const) {
-      const input = generatedInput({...generator, seed: 10 + index});
-      const record = status is 'error' ? {error: 'old error'} : {result: {status, overlapTolerance: 1e-7}};
-      writeFileSync(join(source, trialName(index, 10 + index)), JSON.stringify({...input, hullOptions, solveOptions, ...record}));
-    }
-    const names = readdirSync(source);
-    assert.deepEqual(missingTasks(source, new Set(names)).map((t) => t.seed), [11, 14]);
-    const resumed = cli(['retry', source, '--max-nodes', '0']);
-    assert.equal(resumed.status, 0, String(resumed.stderr));
-    assert.match(String(resumed.stderr), /1 inconclusive trials and resuming 2 missing trials/);
-    const rows = String(resumed.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(rows.map((r) => r.seed), [11, 14, 12]);
-    const run = join(directory, readdirSync(directory).find((n) => n.startsWith('retry-'))!);
-    const manifest = JSON.parse(readFileSync(join(run, 'run.json'), 'utf8'));
-    assert.equal(manifest.tasks.length, 3);
-    assert.ok(manifest.tasks.every((t: any) => t.input is undefined));
-    for (const row of rows) {
-      const saved = JSON.parse(readFileSync(join(run, row.file), 'utf8'));
-      assert.deepEqual(saved.points, generatedInput({...generator, seed: row.seed}).points);
-      assert.equal(saved.hullOptions.tolerance, 1e-8);
-    }
+
+test 'retry fills gaps, skips attempted trials, and resumes an interrupted retry manifest', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-resume-test-'
+  try
+    source := join directory, 'source'
+    mkdirSync source
+    generator: GeneratorSpec := family: 'random', dimension: 2, count: 4, seed: 10, distribution: 'sphere', scales: [2, .5]
+    hullOptions := tolerance: 1e-8, maxCombinations: 100
+    solveOptions := root: 0, maxNodes: 0, timeoutMs: 10000
+    writeFileSync join(source, 'run.json'), JSON.stringify {trials: 5, seed: 10, generator, hullOptions, solveOptions}
+    for [index, status] of [[0, 'found'], [2, 'inconclusive'], [3, 'error']] as const
+      input := generatedInput {...generator, seed: 10 + index}
+      record := status is 'error' ? error: 'old error' : result: {status, overlapTolerance: 1e-7}
+      writeFileSync join(source, trialName index, 10 + index), JSON.stringify {...input, hullOptions, solveOptions, ...record}
+    names := readdirSync source
+    assert.deepEqual missingTasks(source, new Set names).map(.seed), [11, 14]
+    resumed := cli ['retry', source, '--max-nodes', '0']
+    assert.equal resumed.status, 0, String resumed.stderr
+    assert.match String(resumed.stderr), /1 inconclusive trials and resuming 2 missing trials/
+    rows := String(resumed.stdout).trim().split('\n').map JSON.parse .
+    assert.deepEqual rows.map(.seed), [11, 14, 12]
+    run := join directory, readdirSync(directory).find((n) => n.startsWith 'retry-')!
+    manifest := JSON.parse readFileSync join(run, 'run.json'), 'utf8'
+    assert.equal manifest.tasks#, 3
+    assert.ok manifest.tasks.every (t: any) => t.input is undefined
+    for row of rows
+      saved := JSON.parse readFileSync join(run, row.file), 'utf8'
+      assert.deepEqual saved.points, generatedInput({...generator, row.seed}).points
+      assert.equal saved.hullOptions.tolerance, 1e-8
     // Simulate a retry interrupted after its first successful trial. Stale
     // journal and summary entries must not conceal the missing output files.
-    const firstPath = join(run, rows[0].file);
-    const first = JSON.parse(readFileSync(firstPath, 'utf8'));
-    first.result.status = 'found';
-    writeFileSync(firstPath, JSON.stringify(first));
-    for (const row of rows.slice(1)) unlinkSync(join(run, row.file));
-    const again = cli(['retry', run]);
-    assert.equal(again.status, 0, String(again.stderr));
-    const againRows = String(again.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(againRows.map((r) => r.seed), [14, 12]);
-    assert.ok(againRows.every((r) => r.status is 'found'));
-    assert.deepEqual(readdirSync(source), names);
+    firstPath := join run, rows[0].file
+    first := JSON.parse readFileSync firstPath, 'utf8'
+    first.result.status = 'found'
+    writeFileSync firstPath, JSON.stringify first
+    for (row of rows[>=1]) unlinkSync join run, row.file
+    again := cli ['retry', run]
+    assert.equal again.status, 0, String again.stderr
+    againRows := String(again.stdout).trim().split('\n').map JSON.parse .
+    assert.deepEqual againRows.map(.seed), [14, 12]
+    assert.ok againRows.every (r) => r.status is 'found'
+    assert.deepEqual readdirSync(source), names
 
-    const legacy = join(directory, 'legacy');
-    mkdirSync(legacy);
-    writeFileSync(join(legacy, 'run.json'), JSON.stringify({command: 'retry', trials: 1,
-      sourceFiles: [join(source, trialName(2, 12))], overrides: {tolerance: '1e-10', 'overlap-tolerance': '1e-9', all: 'true'}}));
-    const legacyTasks = missingTasks(legacy, new Set());
-    assert.equal(legacyTasks[0].seed, 12);
-    assert.equal(legacyTasks[0].hullOptions.tolerance, 1e-10);
-    assert.equal(legacyTasks[0].solveOptions.overlapTolerance, 1e-9);
-    assert.equal(legacyTasks[0].solveOptions.stopAfterFirst, false);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+    legacy := join directory, 'legacy'
+    mkdirSync legacy
+    writeFileSync join(legacy, 'run.json'), JSON.stringify {command: 'retry', trials: 1,
+      sourceFiles: [join source, trialName 2, 12], overrides: tolerance: '1e-10', 'overlap-tolerance': '1e-9', all: 'true'}
+    legacyTasks := missingTasks legacy, new Set
+    assert.equal legacyTasks[0].seed, 12
+    assert.equal legacyTasks[0].hullOptions.tolerance, 1e-10
+    assert.equal legacyTasks[0].solveOptions.overlapTolerance, 1e-9
+    assert.equal legacyTasks[0].solveOptions.stopAfterFirst, false;
+  finally
+    rmSync directory, recursive: true, force: true
 
-test('automatic seeds respect matching reservations, explicit seeds, and concurrent starts', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-seeds-test-'));
-  try {
-    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 3, distribution: 'sphere', seed: 0};
-    const history = join(directory, 'history');
-    mkdirSync(history);
-    const addRun = (name: string, g: GeneratorSpec, trials: number): void => {
-      const run = join(history, name);
-      mkdirSync(run, {recursive: true});
-      writeFileSync(join(run, 'run.json'), JSON.stringify({seed: g.seed, trials, generator: g}));
-    };
-    assert.equal(nextSearchSeed(history, generator, 1), 0);
-    addRun('unfinished', {...generator, seed: 10}, 5);
-    addRun('different-distribution', {...generator, seed: 100, distribution: 'gaussian'}, 10);
-    addRun('different-scales', {...generator, seed: 100, scales: [2, 1]}, 10);
-    addRun('different-count', {...generator, seed: 100, count: 4}, 10);
-    assert.equal(nextSearchSeed(history, generator, 1), 15);
-    addRun('nested/later', {...generator, seed: 20, scales: [1, 1]}, 5);
-    assert.equal(nextSearchSeed(history, generator, 1), 25);
-    assert.throws(=> withSeedLock(history, => { throw new Error('allocation failed'); }), /allocation failed/);
-    assert.equal(existsSync(join(history, '.seed-allocation-lock')), false);
-    addRun('exhausted', {...generator, seed: 2 ** 32 - 1}, 1);
-    assert.throws(=> nextSearchSeed(history, generator, 1), /exhausted/);
 
-    const parent = join(directory, 'automatic');
-    const args = ['search', '--dimension', '2', '--points', '3', '--trials', '2', '--max-nodes', '0', '--output', parent];
-    const first = cli(args);
-    assert.equal(first.status, 0, String(first.stderr));
-    assert.deepEqual(String(first.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [0, 1]);
-    const second = cli(args);
-    assert.equal(second.status, 0, String(second.stderr));
-    assert.deepEqual(String(second.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [2, 3]);
-    const explicit = cli([...args, '--seed', '0']);
-    assert.equal(explicit.status, 0, String(explicit.stderr));
-    assert.deepEqual(String(explicit.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [0, 1]);
+test 'automatic seeds respect matching reservations, explicit seeds, and concurrent starts', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-seeds-test-'
+  try
+    generator: GeneratorSpec := family: 'random', dimension: 2, count: 3, distribution: 'sphere', seed: 0
+    history := join directory, 'history'
+    mkdirSync history
+
+    function addRun(name: string, g: GeneratorSpec, trials: number): void
+      run := join history, name
+      mkdirSync run, recursive: true
+      writeFileSync join(run, 'run.json'), JSON.stringify {g.seed, trials, generator: g}
+    assert.equal nextSearchSeed(history, generator, 1), 0
+    addRun 'unfinished', {...generator, seed: 10}, 5
+    addRun 'different-distribution', {...generator, seed: 100, distribution: 'gaussian'}, 10
+    addRun 'different-scales', {...generator, seed: 100, scales: [2, 1]}, 10
+    addRun 'different-count', {...generator, seed: 100, count: 4}, 10
+    assert.equal nextSearchSeed(history, generator, 1), 15
+    addRun 'nested/later', {...generator, seed: 20, scales: [1, 1]}, 5
+    assert.equal nextSearchSeed(history, generator, 1), 25
+    assert.throws => withSeedLock(history, =>
+      throw new Error 'allocation failed'
+    ), /allocation failed/
+    assert.equal existsSync(join history, '.seed-allocation-lock'), false
+    addRun 'exhausted', {...generator, seed: 2 ** 32 - 1}, 1
+    assert.throws => nextSearchSeed(history, generator, 1), /exhausted/
+
+    parent := join directory, 'automatic'
+    args := ['search', '--dimension', '2', '--points', '3', '--trials', '2', '--max-nodes', '0', '--output', parent]
+    first := cli args
+    assert.equal first.status, 0, String first.stderr
+    assert.deepEqual String(first.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [0, 1]
+    second := cli args
+    assert.equal second.status, 0, String second.stderr
+    assert.deepEqual String(second.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [2, 3]
+    explicit := cli [...args, '--seed', '0']
+    assert.equal explicit.status, 0, String explicit.stderr
+    assert.deepEqual String(explicit.stdout).trim().split('\n').map((line) => JSON.parse(line).seed), [0, 1]
 
     // Two independent processes share the allocation lock. Run their async
     // orchestration in a child process because this test harness is synchronous.
-    const script = `const {spawn} = require('node:child_process');
+    script := `const {spawn} = require('node:child_process');
       Promise.all([0,1].map(() => new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, ${JSON.stringify(['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args])});
+        const child = spawn(process.execPath, ${JSON.stringify ['--import', '@danielx/civet/register', resolve('src/cli.civet'), ...args]});
         let out = '', err = '';
         child.stdout.on('data', x => out += x); child.stderr.on('data', x => err += x);
         child.on('error', reject);
         child.on('exit', code => code === 0 ? resolve(out.trim().split('\\n').map(x => JSON.parse(x).seed)) : reject(new Error(err)));
-      }))).then(x => console.log(JSON.stringify(x))).catch(e => { console.error(e); process.exitCode = 1; });`;
-    const concurrent = spawnSync(process.execPath, ['-e', script], {encoding: 'utf8'});
-    assert.equal(concurrent.status, 0, concurrent.stderr);
-    const seeds = JSON.parse(concurrent.stdout).flat().sort((a: number, b: number) => a - b);
-    assert.deepEqual(seeds, [4, 5, 6, 7]);
-    assert.equal(existsSync(join(parent, '.seed-allocation-lock')), false);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+      }))).then(x => console.log(JSON.stringify(x))).catch(e => { console.error(e); process.exitCode = 1; });`
+    concurrent := spawnSync process.execPath, ['-e', script], encoding: 'utf8'
+    assert.equal concurrent.status, 0, concurrent.stderr
+    seeds := JSON.parse(concurrent.stdout).flat().sort (a: number, b: number) => a - b
+    assert.deepEqual seeds, [4, 5, 6, 7]
+    assert.equal existsSync(join parent, '.seed-allocation-lock'), false;
+  finally
+    rmSync directory, recursive: true, force: true
 
-test('retry selects only uncovered work, deduplicates sources, and supports preview and scope overrides', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-coverage-'));
-  try {
-    const local = join(directory, 'local'); mkdirSync(local);
-    const make = (parent: string, name: string, metadata: object): string => {
-      const path = join(parent, name); mkdirSync(path);
-      writeFileSync(join(path, 'run.json'), JSON.stringify(metadata)); return path;
-    };
-    const record = (directory: string, name: string, status: string, sourceFile?: string, body = 'must not be parsed'): void => {
-      writeFileSync(join(directory, name), body);
-      const path = join(directory, 'trials.jsonl');
-      writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status, sourceFile}) + '\n');
-    };
-    const generator: GeneratorSpec = {family: 'random', dimension: 2, count: 3, seed: 10, distribution: 'sphere', scales: [1, 1]};
-    const original = make(local, 'original', {command: 'search', seed: 10, trials: 4, generator});
-    const names = [0, 1, 2, 3].map((i) => trialName(i, 10 + i));
-    const saved = {...generatedInput({...generator, seed: 11}), hullOptions: {}, solveOptions: {}, result: {status: 'inconclusive', overlapTolerance: 1e-8}};
-    record(original, names[0], 'found'); record(original, names[1], 'inconclusive', undefined, JSON.stringify(saved));
-    const first = make(local, 'first', {command: 'retry', trials: 3, tasks: names.slice(1).map((name, i) => ({name, sourceFile: join(original, name), generator: {...generator, seed: 11 + i}, hullOptions: {}, solveOptions: {}}))});
-    record(first, names[1], 'inconclusive', join(original, names[1]), JSON.stringify(saved));
-    const later = make(local, 'later', {command: 'retry', trials: 2, tasks: [
-      {name: 'trial-a.json', sourceFile: join(first, names[1])},
-      {name: 'trial-b.json', sourceFile: join(original, names[2])}
-    ]});
-    record(later, 'trial-a.json', 'found'); record(later, 'trial-b.json', 'no-unfolding');
-    const elsewhere = make(directory, 'elsewhere', {command: 'retry', trials: 1});
-    record(elsewhere, 'trial-other.json', 'found', join(original, names[3]));
-    const preview = (...args: string[]) => {
-      const result = cli(['retry', ...args, '--dry-run']);
-      assert.equal(result.status, 0, String(result.stderr)); return JSON.parse(String(result.stdout));
-    };
-    const before = readdirSync(local);
-    const selection = preview(original, first);
-    assert.equal(selection.trials, 1); assert.equal(selection.missing, 1);
-    assert.equal(selection.inconclusive, 0); assert.equal(selection.skippedResolved, 4);
-    assert.equal(selection.skippedDuplicates, 1);
-    assert.deepEqual(readdirSync(local), before);
-    assert.equal(preview(original, '--coverage-root', directory).trials, 0);
-    assert.equal(preview(original, '--ignore-coverage').trials, 3);
+
+test 'retry selects only uncovered work, deduplicates sources, and supports preview and scope overrides', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-retry-coverage-'
+  try
+    local := join(directory, 'local'); mkdirSync local
+
+    function make(parent: string, name: string, metadata: object): string
+      path := join(parent, name); mkdirSync path
+      writeFileSync(join(path, 'run.json'), JSON.stringify metadata); path
+
+    function record(directory: string, name: string, status: string, sourceFile?: string, body = 'must not be parsed'): void
+      writeFileSync join(directory, name), body
+      path := join directory, 'trials.jsonl'
+      writeFileSync path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({file: name, status, sourceFile}) + '\n'
+    generator: GeneratorSpec := family: 'random', dimension: 2, count: 3, seed: 10, distribution: 'sphere', scales: [1, 1]
+    original := make local, 'original', {command: 'search', seed: 10, trials: 4, generator}
+    names := [0, 1, 2, 3].map (i) => trialName i, 10 + i
+    saved := {...generatedInput({...generator, seed: 11}), hullOptions: {}, solveOptions: {}, result: status: 'inconclusive', overlapTolerance: 1e-8}
+    record(original, names[0], 'found'); record original, names[1], 'inconclusive', undefined, JSON.stringify saved
+    first := make local, 'first', command: 'retry', trials: 3, tasks: names[>=1].map (name, i) => {name, sourceFile: join(original, name), generator: {...generator, seed: 11 + i}, hullOptions: {}, solveOptions: {}}
+    record first, names[1], 'inconclusive', join(original, names[1]), JSON.stringify saved
+    later := make local, 'later', {command: 'retry', trials: 2, tasks: [
+      name: 'trial-a.json', sourceFile: join first, names[1]
+      {name: 'trial-b.json', sourceFile: join original, names[2]}
+    ]}
+    record(later, 'trial-a.json', 'found'); record later, 'trial-b.json', 'no-unfolding'
+    elsewhere := make directory, 'elsewhere', command: 'retry', trials: 1
+    record elsewhere, 'trial-other.json', 'found', join original, names[3]
+
+    function preview(...args: string[])
+      result := cli ['retry', ...args, '--dry-run']
+      assert.equal(result.status, 0, String result.stderr); JSON.parse String result.stdout
+    before := readdirSync local
+    selection := preview original, first
+    assert.equal(selection.trials, 1); assert.equal selection.missing, 1
+    assert.equal(selection.inconclusive, 0); assert.equal selection.skippedResolved, 4
+    assert.equal selection.skippedDuplicates, 1
+    assert.deepEqual readdirSync(local), before
+    assert.equal preview(original, '--coverage-root', directory).trials, 0
+    assert.equal preview(original, '--ignore-coverage').trials, 3
     // Filtering must happen before legacy missingTasks opens the absent source.
-    const legacy = make(local, 'legacy', {command: 'retry', trials: 1, sourceFiles: [join(original, names[2])]});
-    assert.equal(preview(legacy).trials, 0);
-    const retried = cli(['retry', original, first, '--max-nodes', '0']);
-    assert.equal(retried.status, 0, String(retried.stderr));
-    const rows = String(retried.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(rows.length, 1); assert.equal(rows[0].seed, 13);
-    const run = join(local, readdirSync(local).find((name) => name.startsWith('retry-'))!);
-    const finished = cli(['retry', run]);
-    assert.equal(finished.status, 0, String(finished.stderr));
-    assert.equal(JSON.parse(String(finished.stdout)).status, 'found');
-    const after = readdirSync(local);
-    const empty = cli(['retry', original]);
-    assert.equal(empty.status, 0, String(empty.stderr));
-    assert.equal(String(empty.stdout), '');
-    assert.deepEqual(readdirSync(local), after);
-    assert.match(String(empty.stderr), /No inconclusive trials or missing trials remain/);
-  } finally { rmSync(directory, {recursive: true, force: true}); }
-});
+    legacy := make local, 'legacy', command: 'retry', trials: 1, sourceFiles: [join original, names[2]]
+    assert.equal preview(legacy).trials, 0
+    retried := cli ['retry', original, first, '--max-nodes', '0']
+    assert.equal retried.status, 0, String retried.stderr
+    rows := String(retried.stdout).trim().split('\n').map JSON.parse .
+    assert.equal(rows#, 1); assert.equal rows[0].seed, 13
+    run := join local, readdirSync(local).find((name) => name.startsWith 'retry-')!
+    finished := cli ['retry', run]
+    assert.equal finished.status, 0, String finished.stderr
+    assert.equal JSON.parse(String finished.stdout).status, 'found'
+    after := readdirSync local
+    empty := cli ['retry', original]
+    assert.equal empty.status, 0, String empty.stderr
+    assert.equal String(empty.stdout), ''
+    assert.deepEqual readdirSync(local), after
+    assert.match String(empty.stderr), /No inconclusive trials or missing trials remain/;
+  finally
+    rmSync directory, {recursive: true, force: true}
 
-test('retry uses journal statuses without opening indexed completed trials', => {
-  const directory = mkdtempSync(join(tmpdir(), 'unfolding-retry-index-'));
-  try {
-    const source = join(directory, 'source');
-    mkdirSync(source);
-    const journal: string[] = [];
-    for (let i = 0; i < 500; i++) {
-      const name = `trial-completed-${i}.json`;
+
+
+test 'retry uses journal statuses without opening indexed completed trials', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-retry-index-'
+  try
+    source := join directory, 'source'
+    mkdirSync source
+    journal: string[] := []
+    for i of [0..<500]
+      name := `trial-completed-${i}.json`
       // Invalid contents make any unnecessary coordinate-file read fail.
-      writeFileSync(join(source, name), 'This indexed completed trial must not be opened.');
-      journal.push(JSON.stringify({file: name, status: ['found', 'no-unfolding', 'error'][i % 3]}));
-    }
-    const input = generatedInput({family: 'random', dimension: 2, count: 3, seed: 0});
-    for (const name of ['trial-indexed.json', 'trial-unindexed.json', 'trial-invalid-row.json']) {
-      writeFileSync(join(source, name), JSON.stringify({...input, result: {status: 'inconclusive'}}));
-    }
-    journal.push(JSON.stringify({file: 'trial-indexed.json', status: 'inconclusive'}));
-    journal.push(JSON.stringify({file: 'trial-indexed.json', status: 'inconclusive'}));
-    journal.push(JSON.stringify({file: 'trial-missing-file.json', status: 'inconclusive'}));
-    journal.push(JSON.stringify({file: 'trial-invalid-row.json', status: 'found'}));
-    journal.push(JSON.stringify({file: 'trial-invalid-row.json', status: 'unknown'}));
-    journal.push('{truncated');
-    writeFileSync(join(source, 'trials.jsonl'), journal.join('\n'));
-    writeFileSync(join(source, 'summary.json'), JSON.stringify({found: 500, inconclusive: 0}));
-    const retried = cli(['retry', source, '--max-nodes', '0']);
-    assert.equal(retried.status, 0, String(retried.stderr));
-    const rows = String(retried.stdout).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(rows.map((row) => row.sourceFile), ['trial-indexed.json', 'trial-invalid-row.json', 'trial-unindexed.json'].map((name) => join(source, name)));
-    assert.ok(rows.every((row) => row.status is 'inconclusive'));
-    assert.match(String(retried.stderr), /ignored 2 invalid journal rows/);
-  } finally {
-    rmSync(directory, {recursive: true, force: true});
-  }
-});
+      writeFileSync join(source, name), 'This indexed completed trial must not be opened.'
+      journal.push JSON.stringify file: name, status: ['found', 'no-unfolding', 'error'][i % 3]
+    input := generatedInput family: 'random', dimension: 2, count: 3, seed: 0
+    for name of ['trial-indexed.json', 'trial-unindexed.json', 'trial-invalid-row.json']
+      writeFileSync join(source, name), JSON.stringify {...input, result: status: 'inconclusive'}
+    journal.push JSON.stringify file: 'trial-indexed.json', status: 'inconclusive'
+    journal.push JSON.stringify file: 'trial-indexed.json', status: 'inconclusive'
+    journal.push JSON.stringify file: 'trial-missing-file.json', status: 'inconclusive'
+    journal.push JSON.stringify file: 'trial-invalid-row.json', status: 'found'
+    journal.push JSON.stringify file: 'trial-invalid-row.json', status: 'unknown'
+    journal.push '{truncated'
+    writeFileSync join(source, 'trials.jsonl'), journal.join '\n'
+    writeFileSync join(source, 'summary.json'), JSON.stringify found: 500, inconclusive: 0
+    retried := cli ['retry', source, '--max-nodes', '0']
+    assert.equal retried.status, 0, String retried.stderr
+    rows := String(retried.stdout).trim().split('\n').map JSON.parse .
+    assert.deepEqual rows.map(.sourceFile), ['trial-indexed.json', 'trial-invalid-row.json', 'trial-unindexed.json'].map join source, .
+    assert.ok rows.every (row) => row.status is 'inconclusive'
+    assert.match String(retried.stderr), /ignored 2 invalid journal rows/;
+  finally
+    rmSync directory, recursive: true, force: true
 
-console.log(`${passed} test groups passed.`);
+
+console.log `${passed} test groups passed.`

@@ -1,48 +1,80 @@
-import {readFileSync, writeFileSync} from 'node:fs'
-interface Row {dimension: number; points: number; seed: number; method: string; hullMs: number; searchMs: number; stats: {nodes: number};}
-const {rows} = JSON.parse(readFileSync('bench/output/completed-results.json', 'utf8')) as {rows: Row[]}
-const median = (x: number[]): number => [...x].sort((a, b) => a - b)[Math.floor(x.length / 2)]
-let report = '# Full completed searches and bottlenecks\n\nTen saved successful examples, originally under ten seconds of search time, rerun to completion three times per backend. No node or time cutoff. Backend order alternates. Every search has the same node/prune/solution counts and first witness tree across methods. Times below are medians in milliseconds. Hulls are prepared once and excluded from search timing.\n\n'
+{readFileSync, writeFileSync} from node:fs
+interface Row
+  dimension: number
+  points: number
+  seed: number
+  method: string
+  hullMs: number
+  searchMs: number
+  stats: {nodes: number}
+
+{rows} := JSON.parse(readFileSync 'bench/output/completed-results.json', 'utf8') as {rows: Row[]}
+
+function median(x: number[]): number
+  [...x].sort((a, b) => a - b)[Math.floor x# / 2]
+report .= '# Full completed searches and bottlenecks\n\nTen saved successful examples, originally under ten seconds of search time, rerun to completion three times per backend. No node or time cutoff. Backend order alternates. Every search has the same node/prune/solution counts and first witness tree across methods. Times below are medians in milliseconds. Hulls are prepared once and excluded from search timing.\n\n'
 report += '| d | Points | Seed | Nodes | Enumeration | Dual LP | Speedup | Hull construction* |\n|---|---|---|---:|---:|---:|---:|---:|\n'
-let oldTotal = 0, newTotal = 0
-for (const key of [...new Set(rows.map((r) => `${r.dimension}/${r.points}/${r.seed}`))]) {
-  const group = rows.filter((r) => `${r.dimension}/${r.points}/${r.seed}` is key), item = group[0]
-  const oldMs = median(group.filter((r) => r.method is 'enumerate').map((r) => r.searchMs)), newMs = median(group.filter((r) => r.method is 'dual-lp').map((r) => r.searchMs))
+oldTotal .= 0; newTotal .= 0
+for key of [...new Set rows.map (r) => `${r.dimension}/${r.points}/${r.seed}`]
+  group := rows.filter((r) => `${r.dimension}/${r.points}/${r.seed}` is key); item := group[0]
+  oldMs := median(group.filter((r) => r.method is 'enumerate').map(.searchMs)); newMs := median group.filter((r) => r.method is 'dual-lp').map(.searchMs)
   oldTotal += oldMs; newTotal += newMs
-  report += `| ${item.dimension} | ${item.points} | ${item.seed} | ${item.stats.nodes} | ${oldMs.toFixed(2)} | ${newMs.toFixed(2)} | ${(oldMs / newMs).toFixed(1)}x | ${item.hullMs.toFixed(2)} |\n`
-}
-report += `\nSum of per-case median search times: **${(oldTotal / 1000).toFixed(3)} s versus ${(newTotal / 1000).toFixed(3)} s, ${(oldTotal / newTotal).toFixed(1)}x faster**. *Hull construction is one separately measured pass, not a median; this column is indicative and may include warmup. Timing on a shared machine is noisy.\n\n`
-interface ProfileNode {id: number; callFrame: {functionName: string; url: string; lineNumber: number}; children?: number[];}
-interface Profile {nodes: ProfileNode[]; samples: number[];}
-for (const mode of ['search', 'pipeline']) {
-  const profile = JSON.parse(readFileSync(`bench/output/completed-${mode}.cpuprofile`, 'utf8')) as Profile
-  const nodes = new Map(profile.nodes.map((n) => [n.id, n])), parent = new Map<number, number>()
-  for (const n of profile.nodes) for (const child of n.children ?? []) parent.set(child, n.id)
-  const categories = new Map<string, number>(), leaves = new Map<string, number>()
-  for (const sample of profile.samples) {
-    const leaf = nodes.get(sample)!
-    const stack: ProfileNode[] = []
-    let id: number | undefined = sample
-    while (id !== undefined) { stack.push(nodes.get(id)!); id = parent.get(id); }
-    const has = (name: string): boolean => stack.some((n) => n.callFrame.functionName is name)
-    let category = 'Other / runtime'
-    if (leaf.callFrame.functionName is '(garbage collector)') { category = 'Garbage collection'; }
-    else if (has('convexHull')) { category = 'Hull construction'; }
-    else if (has('interiorOverlap')) { category = 'Overlap checking'; }
-    else if (has('attachFacet') or has('placement') or has('rootPlacement')) { category = 'Facet placement'; }
-    else if (has('connected')) { category = 'Connectivity pruning'; }
-    else if (has('visit')) { category = 'Other tree search'; }
-    categories.set(category, (categories.get(category) ?? 0) + 1)
-    const frame = leaf.callFrame
-    const label = `${frame.functionName or '(anonymous)'} (${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1})`
-    leaves.set(label, (leaves.get(label) ?? 0) + 1)
-  }
-  const sorted = (map: Map<string, number>): [string, number][] => [...map].sort((a, b) => b[1] - a[1])
+  report += `| ${item.dimension} | ${item.points} | ${item.seed} | ${item.stats.nodes} | ${oldMs.toFixed 2} | ${newMs.toFixed 2} | ${(oldMs / newMs).toFixed 1}x | ${item.hullMs.toFixed 2} |\n`
+report += `\nSum of per-case median search times: **${(oldTotal / 1000).toFixed 3} s versus ${(newTotal / 1000).toFixed 3} s, ${(oldTotal / newTotal).toFixed 1}x faster**. *Hull construction is one separately measured pass, not a median; this column is indicative and may include warmup. Timing on a shared machine is noisy.\n\n`
+interface ProfileNode
+  id: number
+  callFrame: {functionName: string; url: string; lineNumber: number}
+  children?: number[]
+
+interface Profile
+  nodes: ProfileNode[]
+  samples: number[]
+
+for mode of ['search', 'pipeline']
+  profile := JSON.parse(readFileSync `bench/output/completed-${mode}.cpuprofile`, 'utf8') as Profile
+  nodes := new Map(profile.nodes.map (n) => [n.id, n]); parent := new Map<number, number>
+  for (n of profile.nodes) for (child of n.children ?? []) parent.set child, n.id
+  categories := new Map<string, number>; leaves := new Map<string, number>
+  for sample of profile.samples
+    leaf := nodes.get(sample)!
+    stack: ProfileNode[] := []
+    id: number? .= sample
+    until id is undefined
+      stack.push nodes.get(id)!
+      id = parent.get id
+
+    function has(name: string): boolean
+      stack.some (n) => n.callFrame.functionName is name
+    category .= 'Other / runtime'
+    if leaf.callFrame.functionName is '(garbage collector)'
+      category = 'Garbage collection'
+
+    else if has 'convexHull'
+      category = 'Hull construction'
+
+    else if has 'interiorOverlap'
+      category = 'Overlap checking'
+
+    else if has('attachFacet') or has('placement') or has 'rootPlacement'
+      category = 'Facet placement'
+
+    else if has 'connected'
+      category = 'Connectivity pruning'
+
+    else if has 'visit'
+      category = 'Other tree search'
+
+    categories.set category, (categories.get(category) ?? 0) + 1
+    frame := leaf.callFrame
+    label := `${frame.functionName or '(anonymous)'} (${frame.url.split('/')[>=-2].join '/'}:${frame.lineNumber + 1})`
+    leaves.set label, (leaves.get(label) ?? 0) + 1
+
+  function sorted(map: Map<string, number>): [string, number][]
+    [...map].sort (a, b) => b[1] - a[1]
   report += `## ${mode is 'search' ? 'Search only' : 'Hull construction plus search'} profile\n\nRepeated full solves for at least six seconds after setup, with V8 CPU sampling at 1 ms. Percentages are sample shares (not exact wall-time attribution). Each cycle runs the same ten examples. GC samples cannot be assigned to the allocating phase.\n\n| Phase (inclusive) | Samples | Share |\n|---|---:|---:|\n`
-  for (const [label, count] of sorted(categories)) report += `| ${label} | ${count} | ${(100 * count / profile.samples.length).toFixed(1)}% |\n`
+  for ([label, count] of sorted categories) report += `| ${label} | ${count} | ${(100 * count / profile.samples#).toFixed 1}% |\n`
   report += '\nLargest self-time locations:\n\n| Function | Share |\n|---|---:|\n'
-  for (const [label, count] of sorted(leaves).slice(0, 12)) report += `| ${label} | ${(100 * count / profile.samples.length).toFixed(1)}% |\n`
-}
+  for ([label, count] of sorted(leaves)[<12]) report += `| ${label} | ${(100 * count / profile.samples#).toFixed 1}% |\n`
 report += '\nReproduce with `pnpm exec civet bench/completed.civet`, then `pnpm exec civet bench/completed-report.civet`. Raw timing data: [completed-results.json](completed-results.json). Load the [search profile](completed-search.cpuprofile) or [pipeline profile](completed-pipeline.cpuprofile) in Chrome DevTools for call-tree inspection. Exact coordinates and settings are stored in [completed-cases.json](../completed-cases.json).\n'
-writeFileSync('bench/output/completed.md', report)
-console.log(report)
+writeFileSync 'bench/output/completed.md', report
+console.log report

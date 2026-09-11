@@ -2,98 +2,98 @@
 export type Vector = number[]
 export type Matrix = number[][]
 
-export function dot(a: Vector, b: Vector): number {
-  let sum = 0
-  for (let i = 0; i < a.length; i++) sum += a[i] * b[i]
-  return sum
-}
-export const add = (a: Vector, b: Vector): Vector => a.map((x, i) => x + b[i])
-export const sub = (a: Vector, b: Vector): Vector => a.map((x, i) => x - b[i])
-export const mul = (a: Vector, s: number): Vector => a.map((x) => x * s)
-export const norm = (a: Vector): number => Math.hypot(...a)
-export const apply = (a: Matrix, x: Vector): Vector => a.map((row) => dot(row, x))
-export const mean = (points: Vector[]): Vector => points[0].map((_, j) => points.reduce((s, p) => s + p[j] / points.length, 0))
-export const unit = (a: Vector, eps: number): Vector => {
-  const length = norm(a)
-  if (length <= eps) throw new Error('Numerically degenerate direction; rescale or reduce tolerance.')
-  return mul(a, 1 / length)
-}
+export function dot(a: Vector, b: Vector): number
+  sum .= 0
+  for (i of [0..<a#]) sum += a[i] * b[i]
+  sum
 
-export function residual(v: Vector, basis: Matrix): Vector {
-  const r = [...v]
-  orthogonalize(r, basis)
-  return r
-}
+export function add(a: Vector, b: Vector): Vector
+  a.map (x, i) => x + b[i]
 
-function orthogonalize(r: Vector, basis: Matrix): void {
+export function sub(a: Vector, b: Vector): Vector
+  a.map (x, i) => x - b[i]
+
+export function mul(a: Vector, s: number): Vector
+  a.map (x) => x * s
+
+export function norm(a: Vector): number
+  Math.hypot ...a
+
+export function apply(a: Matrix, x: Vector): Vector
+  a.map dot ., x
+
+export function mean(points: Vector[]): Vector
+  points[0].map (_, j) => points.reduce (s, p) => s + p[j] / points#, 0
+
+export function unit(a: Vector, eps: number): Vector
+  length := norm a
+  throw new Error('Numerically degenerate direction; rescale or reduce tolerance.') if length <= eps
+  mul a, 1 / length
+
+export function residual(v: Vector, basis: Matrix): Vector
+  r := [...v]
+  orthogonalize r, basis
+  r
+
+function orthogonalize(r: Vector, basis: Matrix): void
   // Reorthogonalization matters for thin facets and nearly dependent input.
-  for (let pass = 0; pass < 2; pass++) {
-    for (const b of basis) {
-      const projection = dot(r, b)
-      for (let j = 0; j < r.length; j++) r[j] -= b[j] * projection
-    }
-  }
-}
+  for pass of [0..<2]
+    for b of basis
+      projection := dot r, b
+      for (j of [0..<r#]) r[j] -= b[j] * projection
 
-export function orthonormal(vectors: Matrix, eps: number): Matrix {
-  const basis: Matrix = []
-  for (const v of vectors) {
-    const r = residual(v, basis)
-    if (norm(r) > eps) basis.push(unit(r, eps))
-  }
-  return basis
-}
+export function orthonormal(vectors: Matrix, eps: number): Matrix
+  basis: Matrix := []
+  for v of vectors
+    r := residual v, basis
+    basis.push unit r, eps if norm(r) > eps
+  basis
 
-export const affineBasis = (points: Vector[], eps: number): Matrix => (
-  points.length ? orthonormal(points.slice(1).map((p) => sub(p, points[0])), eps) : [])
+export function affineBasis(points: Vector[], eps: number): Matrix
+  points# ? orthonormal(points[>=1].map(sub(., points[0])), eps) : []
 
-export function perpendicular(basis: Matrix, dimension: number, eps: number): Vector {
-  let best: Vector = []
-  let length = 0
-  const r = Array(dimension).fill(0) as Vector
-  for (let i = 0; i < dimension; i++) {
+export function perpendicular(basis: Matrix, dimension: number, eps: number): Vector
+  best: Vector .= []
+  length .= 0
+  r := Array(dimension).fill(0) as Vector
+  for i of [0..<dimension]
     r.fill(0); r[i] = 1
-    orthogonalize(r, basis)
-    const candidateLength = norm(r)
-    if (candidateLength > length) { best = [...r]; length = candidateLength; }
-  }
-  return unit(best, eps)
-}
+    orthogonalize r, basis
+    candidateLength := norm r
+    if candidateLength > length
+      best = [...r]
+      length = candidateLength
 
-export function* combinations(n: number, k: number): Generator<number[]> {
-  if (k < 0 or k > n) return
-  const indices = Array.from({length: k}, (_, i) => i)
-  while (true) {
+  unit best, eps
+
+export function* combinations(n: number, k: number): Generator<number[]>
+  return if k < 0 or k > n
+  indices := Array.from length: k, (_, i) => i
+  loop
     yield [...indices]
-    let i = k - 1
-    while (i >= 0 and indices[i] is n - k + i) i--
-    if (i < 0) return
+    i .= k - 1
+    while i >= 0 and indices[i] is n - k + i
+      i--
+    return if i < 0
     indices[i]++
-    for (let j = i + 1; j < k; j++) indices[j] = indices[j - 1] + 1
-  }
-}
+    for (j of [i + 1..<k]) indices[j] = indices[j - 1] + 1
 
 // Gaussian elimination with partial pivoting; null means numerically singular.
-export function solveLinear(matrix: Matrix, rhs: Vector, eps: number): Vector | null {
-  const n = rhs.length
-  const a = matrix.map((row, i) => [...row, rhs[i]])
-  for (let col = 0; col < n; col++) {
-    let pivot = col
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row
-    }
-    if (Math.abs(a[pivot][col]) <= eps) return null
+export function solveLinear(matrix: Matrix, rhs: Vector, eps: number): Vector | null
+  n := rhs#
+  a := matrix.map (row, i) => [...row, rhs[i]]
+  for col of [0..<n]
+    pivot .= col
+    for row of [col + 1..<n]
+      pivot = row if Math.abs(a[row][col]) > Math.abs a[pivot][col]
+    return null if Math.abs(a[pivot][col]) <= eps
     [a[col], a[pivot]] = [a[pivot], a[col]]
-    for (let row = col + 1; row < n; row++) {
-      const ratio = a[row][col] / a[col][col]
-      for (let j = col; j <= n; j++) a[row][j] -= ratio * a[col][j]
-    }
-  }
-  const x = Array(n).fill(0)
-  for (let row = n - 1; row >= 0; row--) {
-    let value = a[row][n]
-    for (let j = row + 1; j < n; j++) value -= a[row][j] * x[j]
+    for row of [col + 1..<n]
+      ratio := a[row][col] / a[col][col]
+      for (j of [col..n]) a[row][j] -= ratio * a[col][j]
+  x := Array(n).fill 0
+  for row of [n>..>=0]
+    value .= a[row][n]
+    for (j of [row + 1..<n]) value -= a[row][j] * x[j]
     x[row] = value / a[row][row]
-  }
-  return x.every(Number.isFinite) ? x : null
-}
+  x.every(Number.isFinite) ? x : null

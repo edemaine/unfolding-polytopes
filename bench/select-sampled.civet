@@ -1,50 +1,48 @@
-import {readFileSync, readdirSync, existsSync, writeFileSync} from 'node:fs'
-import {join} from 'node:path'
-import {generatedInput} from '../src/jobs.civet'
-import {benchmarkCase} from './fixtures.civet'
-import type {GeneratorSpec} from '../src/jobs.civet'
+{readFileSync, readdirSync, existsSync, writeFileSync} from node:fs
+{join} from node:path
+{generatedInput} from ../src/jobs.civet
+{benchmarkCase} from ./fixtures.civet
+type {GeneratorSpec} from ../src/jobs.civet
 // Read run metadata and compact journals, never scan all coordinate files.
-const groups = new Map<string, {generator: GeneratorSpec; sources: string[]}>()
-for (const entry of readdirSync('results', {withFileTypes: true})) {
-  const source = join('results', entry.name), path = join(source, 'run.json')
-  if (not entry.isDirectory() or not existsSync(path)) continue
-  const run = JSON.parse(readFileSync(path, 'utf8'))
-  if (not run.generator) continue
-  const g = run.generator as GeneratorSpec
-  const key = JSON.stringify([g.family, g.dimension, g.count, g.distribution, g.scales])
-  if (not groups.has(key)) groups.set(key, {generator: g, sources: []})
-  groups.get(key)!.sources.push(source)
-}
-const selected: object[] = []
-for (const {generator, sources} of [...groups.values()].sort((a, b) => a.generator.dimension - b.generator.dimension or a.generator.count - b.generator.count)) {
-  const candidates = new Map<number, {file: string; seed: number; elapsedMs: number; status: string}>()
-  for (const source of sources) {
-    const journal = join(source, 'trials.jsonl')
-    if (not existsSync(journal)) continue
-    for (const line of readFileSync(journal, 'utf8').split('\n')) {
-      if (not line.trim()) continue
+groups := new Map<string, {generator: GeneratorSpec; sources: string[]}>
+for entry of readdirSync 'results', withFileTypes: true
+  source := join('results', entry.name); path := join source, 'run.json'
+  continue if not entry.isDirectory() or not existsSync path
+  run := JSON.parse readFileSync path, 'utf8'
+  continue unless run.generator
+  g := run.generator as GeneratorSpec
+  key := JSON.stringify [g.family, g.dimension, g.count, g.distribution, g.scales]
+  unless (groups.has key) groups.set key, generator: g, sources: []
+  groups.get(key)!.sources.push source
+selected: object[] := []
+for {generator, sources} of [...groups.values()].sort (a, b) => a.generator.dimension - b.generator.dimension or a.generator.count - b.generator.count
+  candidates := new Map<number, {file: string; seed: number; elapsedMs: number; status: string}>
+  for source of sources
+    journal := join source, 'trials.jsonl'
+    continue unless existsSync journal
+    for line of readFileSync(journal, 'utf8').split '\n'
+      continue unless line.trim()
       let row
-      try { row = JSON.parse(line); } catch { continue; }
-      if (not Number.isSafeInteger(row.seed) or not ['found', 'inconclusive', 'no-unfolding'].includes(row.status)) continue
-      const file = join(source, row.file)
-      const old = candidates.get(row.seed)
-      if (not old or (row.elapsedMs ?? 0) > old.elapsedMs) candidates.set(row.seed, {file, seed: row.seed, elapsedMs: row.elapsedMs ?? 0, status: row.status})
-    }
-  }
-  const rows = [...candidates.values()].sort((a, b) => a.seed - b.seed)
-  const hard = [...rows].sort((a, b) => Number(b.status is 'inconclusive') - Number(a.status is 'inconclusive') or b.elapsedMs - a.elapsedMs)[0]
-  const picks = [rows[0], rows[Math.floor(rows.length / 2)], hard].filter(Boolean)
-  const unique = [...new Map(picks.map((row) => [row.seed, row])).values()]
-  if (not unique.length)
-    for (let seed = generator.seed; seed < generator.seed + 3; seed++) {
-      const g = {...generator, seed}
-      selected.push(benchmarkCase(g, generatedInput(g).points, {}, {}, 'planned-unfinished'))
-    }
-  for (const row of unique) {
-    const saved = JSON.parse(readFileSync(row.file, 'utf8'))
-    selected.push(benchmarkCase({...generator, seed: row.seed}, saved.points, saved.hullOptions, {...saved.solveOptions, overlapTolerance: saved.result?.overlapTolerance}, row.status, saved.result?.stats?.nodes, row.elapsedMs))
-  }
-  console.log(`${generator.dimension}D n=${generator.count}: ${rows.length} recorded seeds; selected ${unique.map((r) => r.seed).join(', ')}`)
-}
-writeFileSync('bench/sampled-cases.json', JSON.stringify(selected, null, 2) + '\n')
-console.log('Cases saved to bench/sampled-cases.json')
+      try
+        row = JSON.parse line
+      catch
+        continue
+
+      continue if not Number.isSafeInteger(row.seed) or row.status is not in ['found', 'inconclusive', 'no-unfolding']
+      file := join source, row.file
+      old := candidates.get row.seed
+      candidates.set row.seed, {file, row.seed, elapsedMs: row.elapsedMs ?? 0, row.status} if not old or (row.elapsedMs ?? 0) > old.elapsedMs
+  rows := [...candidates.values()].sort (a, b) => a.seed - b.seed
+  hard := [...rows].sort((a, b) => Number(b.status is 'inconclusive') - Number(a.status is 'inconclusive') or b.elapsedMs - a.elapsedMs)[0]
+  picks := [rows[0], rows[Math.floor rows# / 2], hard].filter Boolean
+  unique := [...new Map(picks.map (row) => [row.seed, row]).values()]
+  unless (unique#)
+    for seed of [generator.seed..<generator.seed + 3]
+      g := {...generator, seed}
+      selected.push benchmarkCase g, generatedInput(g).points, {}, {}, 'planned-unfinished'
+  for row of unique
+    saved := JSON.parse readFileSync row.file, 'utf8'
+    selected.push benchmarkCase {...generator, row.seed}, saved.points, saved.hullOptions, {...saved.solveOptions, saved.result?.overlapTolerance}, row.status, saved.result?.stats?.nodes, row.elapsedMs
+  console.log `${generator.dimension}D n=${generator.count}: ${rows#} recorded seeds; selected ${unique.map(.seed).join ', '}`
+writeFileSync 'bench/sampled-cases.json', JSON.stringify(selected, null, 2) + '\n'
+console.log 'Cases saved to bench/sampled-cases.json'

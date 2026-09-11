@@ -1,21 +1,30 @@
-import {readFileSync, writeFileSync} from 'node:fs'
-interface Row {d: number; points: number; seed: number; method: string; nodes: number; solveMs: number; pairMs: number; solveStats: {fallbacks: number; calls: number};}
-export function writeReport(): void {
-  const data = JSON.parse(readFileSync('bench/output/results.json', 'utf8')) as {rows: Row[]; date: string; node: string}
-  const rows = data.rows
-  const methods = [...new Set(rows.map((r) => r.method))]
-  const cases = [...new Set(rows.map((r) => `${r.d}/${r.points}/${r.seed}`))]
-  const median = (numbers: number[]): number => [...numbers].sort((a, b) => a - b)[Math.floor(numbers.length / 2)]
-  let report = `# Overlap benchmark\n\nMeasured ${data.date}, Node ${data.node}. Run \`pnpm bench\` to regenerate the raw JSON and this report.\n\n`
+{readFileSync, writeFileSync} from node:fs
+interface Row
+  d: number
+  points: number
+  seed: number
+  method: string
+  nodes: number
+  solveMs: number
+  pairMs: number
+  solveStats: {fallbacks: number; calls: number}
+
+export function writeReport(): void
+  data := JSON.parse(readFileSync 'bench/output/results.json', 'utf8') as {rows: Row[]; date: string; node: string}
+  rows := data.rows
+  methods := [...new Set rows.map(.method)]
+  cases := [...new Set rows.map (r) => `${r.d}/${r.points}/${r.seed}`]
+
+  function median(numbers: number[]): number
+    [...numbers].sort((a, b) => a - b)[Math.floor numbers# / 2]
+  report .= `# Overlap benchmark\n\nMeasured ${data.date}, Node ${data.node}. Run \`pnpm bench\` to regenerate the raw JSON and this report.\n\n`
   report += 'Three rounds rotate method order. Each search uses the same root, branch order, and 120-node cap, stopping earlier on success. Pair tests sample a breadth-first development, including self pairs. All pair decisions, search counts, and witness trees match enumeration. Hull construction and startup are excluded; LP construction, solving, geometric checks, and fallbacks are included. Other jobs may compete for CPU; submillisecond results are noisy. These are bounded workloads, not completed counterexample searches.\n\n'
   report += 'Median search time (milliseconds); columns are dimension / input points / seed (`-1` means cube).\n\n'
-  report += `| Method | ${cases.join(' | ')} |\n|---|${cases.map(=> '---:').join('|')}|\n`
-  for (const method of methods) report += `| ${method} | ${cases.map((key) => median(rows.filter((r) => r.method is method and `${r.d}/${r.points}/${r.seed}` is key).map((r) => r.solveMs)).toFixed(2)).join(' | ')} |\n`
+  report += `| Method | ${cases.join ' | '} |\n|---|${cases.map(=> '---:').join '|'}|\n`
+  for (method of methods) report += `| ${method} | ${cases.map((key) => median(rows.filter((r) => r.method is method and `${r.d}/${r.points}/${r.seed}` is key).map(.solveMs)).toFixed 2).join ' | '} |\n`
   report += '\n6D seed 196 has 88 facets and reaches the 120-node cap. Its 4,529 overlap calls have the following fallback counts (per search):\n\n'
-  for (const method of methods) {
-    const r = rows.find((r) => r.d is 6 and r.method is method)!
+  for method of methods
+    r := rows.find((r) => r.d is 6 and r.method is method)!
     report += `- ${method}: ${r.solveStats.fallbacks}\n`
-  }
   report += 'The halfspace formulation splits unrestricted coordinates and margin into positive/negative variables; the vertex formulation splits equalities into pairs of inequalities. `gjk-lp` first seeks a support separation, then uses the vertex LP. All methods use common cheap checks and an enumeration fallback for uncertain geometry. `primalWitnesses` also counts halfspace LP witnesses, and `supportSeparations` also counts verified halfspace dual bounds.\n\nRaw samples, pair timings, and counters: [results.json](results.json). The 4D cube uses only cheap checks. The small corpus does not establish a universal fastest backend.\n'
-  writeFileSync('bench/output/overlap.md', report)
-}
+  writeFileSync 'bench/output/overlap.md', report

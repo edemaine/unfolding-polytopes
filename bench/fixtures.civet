@@ -1,8 +1,8 @@
-import type {GeneratorSpec} from '../src/jobs.civet'
-import type {Vector} from '../src/linalg.civet'
-import type {HullOptions, SolveOptions} from '../src/index.civet'
+type {GeneratorSpec} from ../src/jobs.civet
+type {Vector} from ../src/linalg.civet
+type {HullOptions, SolveOptions} from ../src/index.civet
 
-export interface BenchmarkCase {
+export interface BenchmarkCase
   generator: GeneratorSpec
   coordinates: Vector[]
   hullOptions: HullOptions
@@ -10,9 +10,7 @@ export interface BenchmarkCase {
   status: string
   savedNodes?: number
   savedMs?: number
-}
 
 // Store the geometry and numerical settings, without local paths or budgets.
-export function benchmarkCase(generator: GeneratorSpec, coordinates: Vector[], hull: HullOptions = {}, solve: SolveOptions = {}, status = 'found', savedNodes?: number, savedMs?: number): BenchmarkCase {
-  return {generator, coordinates, hullOptions: {method: hull.method, tolerance: hull.tolerance ?? 1e-9}, solveOptions: {root: solve.root ?? 0, overlapTolerance: solve.overlapTolerance ?? 16 * (hull.tolerance ?? 1e-9), pruneOverlaps: solve.pruneOverlaps ?? true, stopAfterFirst: solve.stopAfterFirst ?? true, forwardCheck: solve.forwardCheck, forceBridges: solve.forceBridges, branchOrder: solve.branchOrder}, status, savedNodes, savedMs}
-}
+export function benchmarkCase(generator: GeneratorSpec, coordinates: Vector[], hull: HullOptions = {}, solve: SolveOptions = {}, status = 'found', savedNodes?: number, savedMs?: number): BenchmarkCase
+  {generator, coordinates, hullOptions: {hull.method, tolerance: hull.tolerance ?? 1e-9}, solveOptions: root: solve.root ?? 0, overlapTolerance: solve.overlapTolerance ?? 16 * (hull.tolerance ?? 1e-9), pruneOverlaps: solve.pruneOverlaps ?? true, stopAfterFirst: solve.stopAfterFirst ?? true, forwardCheck: solve.forwardCheck, forceBridges: solve.forceBridges, branchOrder: solve.branchOrder, status, savedNodes, savedMs}

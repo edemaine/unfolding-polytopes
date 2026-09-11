@@ -1,84 +1,88 @@
-import {affineBasis, dot, mean, mul, norm, perpendicular, residual, sub, unit} from './linalg.civet'
-import type {Vector, Matrix} from './linalg.civet'
+{affineBasis, dot, mean, mul, norm, perpendicular, residual, sub, unit} from ./linalg.civet
+type {Vector, Matrix} from ./linalg.civet
 
 export class HullPrecisionError extends Error {}
-interface SimplexFace {id: number; vertices: number[]; basis: Matrix; normal: Vector; offset: number; keys: string[];}
-export interface HullBoundary {
+interface SimplexFace
+  id: number
+  vertices: number[]
+  basis: Matrix
+  normal: Vector
+  offset: number
+  keys: string[]
+
+export interface HullBoundary
   faces: SimplexFace[]
   adjacency: [number, number][] // Indices into faces, including coplanar neighbors.
-}
 
 // Beneath-beyond on a triangulated boundary. Coplanar boundary simplices are
 // allowed here; the caller merges supporting planes into true facets.
-export function incrementalHull(points: Vector[], eps: number, consume: () => void): HullBoundary {
-  const d = points[0].length
-  const seed = [0], basis: Matrix = []
-  while (seed.length <= d) {
-    let best = -1, distance = eps, direction: Vector = []
-    for (let i = 0; i < points.length; i++) {
-      if (seed.includes(i)) continue
-      const r = residual(sub(points[i], points[0]), basis), length = norm(r)
-      if (length > distance) { best = i; distance = length; direction = r; }
-    }
-    if (best < 0) throw new HullPrecisionError('Cannot select a stable initial simplex.')
-    seed.push(best); basis.push(unit(direction, eps))
-  }
+export function incrementalHull(points: Vector[], eps: number, consume: => void): HullBoundary
+  d := points[0]#
+  seed := [0]; basis: Matrix := []
+  while seed# <= d
+    best .= -1; distance .= eps; direction: Vector .= []
+    for i of [0..<points#]
+      continue if i is in seed
+      r := residual(sub(points[i], points[0]), basis); length := norm r
+      if length > distance
+        best = i
+        distance = length
+        direction = r
+
+    throw new HullPrecisionError('Cannot select a stable initial simplex.') if best < 0
+    seed.push(best); basis.push unit direction, eps
   // This point stays strictly inside every subsequent hull, fixing orientation.
-  const interior = mean(seed.map((i) => points[i]))
-  const faces = new Map<number, SimplexFace>()
-  const incidence = new Map<string, Set<number>>()
-  let nextId = 0
-  function add(vertices: number[]): void {
+  interior := mean seed.map (i) => points[i]
+  faces := new Map<number, SimplexFace>
+  incidence := new Map<string, Set<number>>
+  nextId .= 0
+  function add(vertices: number[]): void
     consume()
-    vertices.sort((a, b) => a - b)
-    const span = affineBasis(vertices.map((i) => points[i]), eps)
-    if (span.length !== d - 1) throw new HullPrecisionError('Degenerate incremental boundary simplex.')
-    let normal = perpendicular(span, d, eps), offset = dot(normal, points[vertices[0]])
-    const side = dot(normal, interior) - offset
-    if (Math.abs(side) <= eps) throw new HullPrecisionError('Ambiguous incremental facet orientation.')
-    if (side > 0) { normal = mul(normal, -1); offset = -offset; }
-    const keys = vertices.map((_, omitted) => vertices.filter((_, j) => j !== omitted).join(','))
-    const id = nextId++
-    faces.set(id, {id, vertices, basis: span, normal, offset, keys})
-    for (const key of keys) {
-      if (not incidence.has(key)) incidence.set(key, new Set())
-      incidence.get(key)!.add(id)
-      if (incidence.get(key)!.size > 2) throw new HullPrecisionError('Nonmanifold incremental boundary.')
-    }
-  }
-  for (let i = 0; i < seed.length; i++) add(seed.filter((_, j) => j !== i))
-  for (let point = 0; point < points.length; point++) {
-    if (seed.includes(point)) continue
-    const visible = new Set<number>()
-    for (const face of faces.values()) if (dot(face.normal, points[point]) - face.offset > eps) visible.add(face.id)
-    if (not visible.size) continue // Interior, duplicate, or on the existing boundary.
-    const horizon = new Map<string, number[]>()
-    for (const id of visible) {
-      const face = faces.get(id)!
-      for (let j = 0; j < face.keys.length; j++) {
-        const key = face.keys[j], neighbors = incidence.get(key)!
-        if (neighbors.size !== 2) throw new HullPrecisionError('Open incremental boundary.')
-        if ([...neighbors].some((other) => not visible.has(other))) horizon.set(key, face.vertices.filter((_, i) => i !== j))
-      }
-    }
-    if (not horizon.size) throw new HullPrecisionError('Incremental horizon is empty.')
-    for (const id of visible) {
-      for (const key of faces.get(id)!.keys) {
-        const owners = incidence.get(key)!; owners.delete(id)
-        if (not owners.size) incidence.delete(key)
-      }
-      faces.delete(id)
-    }
-    for (const vertices of horizon.values()) add([...vertices, point])
-    for (const owners of incidence.values()) if (owners.size !== 2) throw new HullPrecisionError('Open incremental boundary after insertion.')
-  }
-  const boundary = [...faces.values()]
-  const indices = new Map(boundary.map((face, i) => [face.id, i]))
-  const adjacency: [number, number][] = []
-  for (const owners of incidence.values()) {
-    if (owners.size !== 2) throw new HullPrecisionError('Open final incremental boundary.')
-    const [a, b] = [...owners]
-    adjacency.push([indices.get(a)!, indices.get(b)!])
-  }
-  return {faces: boundary, adjacency}
-}
+    vertices.sort (a, b) => a - b
+    span := affineBasis vertices.map((i) => points[i]), eps
+    throw new HullPrecisionError('Degenerate incremental boundary simplex.') if span# is not d - 1
+    normal .= perpendicular(span, d, eps); offset .= dot normal, points[vertices[0]]
+    side := dot(normal, interior) - offset
+    throw new HullPrecisionError('Ambiguous incremental facet orientation.') if Math.abs(side) <= eps
+    if side > 0
+      normal = mul normal, -1
+      offset = -offset
+
+    keys := vertices.map (_, omitted) => vertices.filter((_, j) => j is not omitted).join ','
+    id := nextId++
+    faces.set id, {id, vertices, basis: span, normal, offset, keys}
+    for key of keys
+      incidence.set key, new Set unless incidence.has key
+      incidence.get(key)!.add id
+      throw new HullPrecisionError('Nonmanifold incremental boundary.') if incidence.get(key)!.size > 2
+  for (i of [0..<seed#]) add seed.filter (_, j) => j is not i
+  for point of [0..<points#]
+    continue if point is in seed
+    visible := new Set<number>
+    for face of faces.values() when dot(face.normal, points[point]) - face.offset > eps
+      visible.add face.id
+    continue unless visible.size // Interior, duplicate, or on the existing boundary.
+    horizon := new Map<string, number[]>
+    for id of visible
+      face := faces.get(id)!
+      for each key, j of face.keys
+        neighbors := incidence.get(key)!
+        throw new HullPrecisionError('Open incremental boundary.') if neighbors.size is not 2
+        if ([...neighbors].some (other) => not visible.has other) horizon.set key, face.vertices.filter (_, i) => i is not j
+    throw new HullPrecisionError('Incremental horizon is empty.') unless horizon.size
+    for id of visible
+      for key of faces.get(id)!.keys
+        owners := incidence.get(key)!; owners.delete id
+        incidence.delete key unless owners.size
+      faces.delete id
+    for (vertices of horizon.values()) add [...vertices, point]
+    for owners of incidence.values() when owners.size is not 2
+      throw new HullPrecisionError 'Open incremental boundary after insertion.'
+  boundary := [...faces.values()]
+  indices := new Map boundary.map (face, i) => [face.id, i]
+  adjacency: [number, number][] := []
+  for owners of incidence.values()
+    throw new HullPrecisionError('Open final incremental boundary.') if owners.size is not 2
+    [a, b] := [...owners]
+    adjacency.push [indices.get(a)!, indices.get(b)!]
+  {faces: boundary, adjacency}

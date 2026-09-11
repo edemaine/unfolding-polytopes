@@ -1,10 +1,13 @@
-import {add, apply, combinations, dot, mean, mul, solveLinear, sub, unit} from './linalg.civet'
-import type {Matrix, Vector} from './linalg.civet'
-import {primalWitness, gjkSeparated, supportSeparates, halfspaceLP} from './primal.civet'
-import type {Polytope} from './polytope.civet'
+{add, apply, combinations, dot, mean, mul, solveLinear, sub, unit} from ./linalg.civet
+type {Matrix, Vector} from ./linalg.civet
+{primalWitness, gjkSeparated, supportSeparates, halfspaceLP} from ./primal.civet
+type {Polytope} from ./polytope.civet
 
-export interface Halfspace { normal: Vector; offset: number; }
-export interface Placement {
+export interface Halfspace
+  normal: Vector
+  offset: number
+
+export interface Placement
   facet: number
   linear: Matrix
   translation: Vector
@@ -13,48 +16,45 @@ export interface Placement {
   halfspaces: Halfspace[]
   min: Vector
   max: Vector
-}
 
-export const mapPoint = (placement: Placement, point: Vector): Vector => add(apply(placement.linear, point), placement.translation)
+export function mapPoint(placement: Placement, point: Vector): Vector
+  add apply(placement.linear, point), placement.translation
 
-function placement(poly: Polytope, facet: number, linear: Matrix, translation: Vector): Placement {
-  const face = poly.facets[facet]
-  const coordinates = face.vertices.map((i) => add(apply(linear, poly.points[i]), translation))
-  const halfspaces = face.ridges.map((id) => {
-    const ridge = poly.ridges[id];
-    const side = ridge.facets[0] is facet ? 0 : 1;
-    const normal = unit(mul(apply(linear, ridge.inward[side]), -1), poly.tolerance);
-    const offset = dot(normal, add(apply(linear, poly.points[ridge.vertices[0]]), translation));
-    return {normal, offset};
-  })
-  const min = coordinates[0].map((_, j) => Math.min(...coordinates.map((p) => p[j])))
-  const max = coordinates[0].map((_, j) => Math.max(...coordinates.map((p) => p[j])))
-  return {facet, linear, translation, vertices: [...face.vertices], coordinates, halfspaces, min, max}
-}
+function placement(poly: Polytope, facet: number, linear: Matrix, translation: Vector): Placement
+  face := poly.facets[facet]
+  coordinates := face.vertices.map (i) => add apply(linear, poly.points[i]), translation
+  halfspaces := face.ridges.map (id) =>
+    ridge := poly.ridges[id]
+    side := ridge.facets[0] is facet ? 0 : 1
+    normal := unit mul(apply(linear, ridge.inward[side]), -1), poly.tolerance
+    offset := dot normal, add apply(linear, poly.points[ridge.vertices[0]]), translation
+    {normal, offset}
 
-export function rootPlacement(poly: Polytope, root = 0): Placement {
-  if (not Number.isInteger(root) or root < 0 or root >= poly.facets.length) throw new Error('Invalid root facet.')
-  const linear = poly.facets[root].basis
-  return placement(poly, root, linear, mul(apply(linear, poly.points[poly.facets[root].vertices[0]]), -1))
-}
+  min := coordinates[0].map (_, j) => Math.min ...coordinates.map (p) => p[j]
+  max := coordinates[0].map (_, j) => Math.max ...coordinates.map (p) => p[j]
+  {facet, linear, translation, vertices: [...face.vertices], coordinates, halfspaces, min, max}
 
-export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number): Placement {
-  const ridge = poly.ridges[ridgeId]
-  if (not ridge or not ridge.facets.includes(parent.facet)) throw new Error('Ridge is not incident to parent facet.')
-  const side = ridge.facets[0] is parent.facet ? 0 : 1
-  const child = ridge.facets[1 - side]
-  const along = ridge.basis.map((v) => apply(parent.linear, v))
-  const across = apply(parent.linear, ridge.inward[side])
+export function rootPlacement(poly: Polytope, root = 0): Placement
+  throw new Error 'Invalid root facet.' if not Number.isInteger(root) or root < 0 or root >= poly.facets#
+  linear := poly.facets[root].basis
+  placement poly, root, linear, mul apply(linear, poly.points[poly.facets[root].vertices[0]]), -1
+
+export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number): Placement
+  ridge := poly.ridges[ridgeId]
+  throw new Error('Ridge is not incident to parent facet.') if not ridge or parent.facet is not in ridge.facets
+  side := ridge.facets[0] is parent.facet ? 0 : 1
+  child := ridge.facets[1 - side]
+  along := ridge.basis.map apply parent.linear, .
+  across := apply parent.linear, ridge.inward[side]
   // Fix the ridge pointwise and send the child's inward direction to the
   // negative of the parent's inward direction. This unfolds the hinge flat.
-  const linear = Array.from({length: poly.dimension - 1}, (_, i) => (
-    Array.from({length: poly.dimension}, (_, j) => (
-      ridge.basis.reduce((sum, v, k) => sum + along[k][i] * v[j], 0)
-      - across[i] * ridge.inward[1 - side][j]))))
-  const anchor = poly.points[ridge.vertices[0]]
-  const translation = sub(mapPoint(parent, anchor), apply(linear, anchor))
-  return placement(poly, child, linear, translation)
-}
+  linear := Array.from length: poly.dimension - 1, (_, i) =>
+    Array.from length: poly.dimension, (_, j) =>
+      ridge.basis.reduce (sum, v, k) => sum + along[k][i] * v[j], 0
+      - across[i] * ridge.inward[1 - side][j]
+  anchor := poly.points[ridge.vertices[0]]
+  translation := sub mapPoint(parent, anchor), apply linear, anchor
+  placement poly, child, linear, translation
 
 // Is there x strictly inside both convex facets? Maximize t subject to
 // n_i . x + t <= b_i for all unit outward normals of both facets. A positive
@@ -62,82 +62,74 @@ export function attachFacet(poly: Polytope, parent: Placement, ridgeId: number):
 // ensure an optimal vertex in (x,t); enumerate its k+1 active constraints.
 // This works in any dimension, including configurations where no vertex of
 // either facet lies in the other. Boundary contact is allowed.
-export const overlapMethods = ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'] as const
+export overlapMethods := ['enumerate', 'primal-lp', 'gjk-lp', 'dual-lp'] as const
 export type OverlapMethod = typeof overlapMethods[number]
-export interface OverlapStats { calls: number; primalWitnesses: number; supportSeparations: number; fallbacks: number; }
+export interface OverlapStats
+  calls: number
+  primalWitnesses: number
+  supportSeparations: number
+  fallbacks: number
 
-export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: () => void = => {;}, method: OverlapMethod = 'dual-lp', stats?: OverlapStats): boolean {
-  if (stats) stats.calls++
-  if (not overlapMethods.includes(method)) throw new Error('Unknown overlap method.')
-  const k = a.min.length
-  if (b.min.length !== k) throw new Error('Cannot intersect different dimensions.')
-  for (let i = 0; i < k; i++) {
-    if (Math.min(a.max[i], b.max[i]) - Math.max(a.min[i], b.min[i]) <= tolerance) return false
-  }
-  const planes = [...a.halfspaces, ...b.halfspaces]
-  const inside = (x: Vector): boolean => planes.every((p) => p.offset - dot(p.normal, x) > tolerance)
-  if (inside(mean(a.coordinates)) or inside(mean(b.coordinates))) return true
-  if (method.startsWith('dual-')) {
-    const result = halfspaceLP(a, b, tolerance, poll)
-    if (result and inside(result.point)) {
-      if (stats) stats.primalWitnesses++
+
+export function interiorOverlap(a: Placement, b: Placement, tolerance: number, poll: => void = => return, method: OverlapMethod = 'dual-lp', stats?: OverlapStats): boolean
+  stats.calls++ if stats
+  throw new Error('Unknown overlap method.') unless method is in overlapMethods
+  k := a.min#
+  throw new Error('Cannot intersect different dimensions.') if b.min# is not k
+  for i of [0..<k]
+    return false if Math.min(a.max[i], b.max[i]) - Math.max(a.min[i], b.min[i]) <= tolerance
+  planes := [...a.halfspaces, ...b.halfspaces]
+
+  function inside(x: Vector): boolean
+    planes.every (p) => p.offset - dot(p.normal, x) > tolerance
+  return true if inside(mean a.coordinates) or inside mean b.coordinates
+  if method.startsWith 'dual-'
+    result := halfspaceLP a, b, tolerance, poll
+    if result and inside result.point
+      stats.primalWitnesses++ if stats
       return true
-    }
-    if (result?.separated) {
-      if (stats) stats.supportSeparations++
+    if result?.separated
+      stats.supportSeparations++ if stats
       return false
-    }
-    if (stats) stats.fallbacks++
-  } else if (method !== 'enumerate') {
-    if (method.startsWith('gjk-') and gjkSeparated(a, b, tolerance, poll)) {
-      if (stats) stats.supportSeparations++
+    stats.fallbacks++ if stats
+  else if method is not 'enumerate'
+    if method.startsWith('gjk-') and gjkSeparated a, b, tolerance, poll
+      stats.supportSeparations++ if stats
       return false
-    }
-    const witness = primalWitness(a, b, poll)
-    if (witness?.point and inside(witness.point)) {
-      if (stats) stats.primalWitnesses++
+    witness := primalWitness a, b, poll
+    if witness?.point and inside witness.point
+      stats.primalWitnesses++ if stats
       return true
-    }
-    if (witness and supportSeparates(a, b, witness.direction, tolerance)) {
-      if (stats) stats.supportSeparations++
+    if witness and supportSeparates a, b, witness.direction, tolerance
+      stats.supportSeparations++ if stats
       return false
-    }
-    if (method.startsWith('primal-') and gjkSeparated(a, b, tolerance, poll)) {
-      if (stats) stats.supportSeparations++
+    if method.startsWith('primal-') and gjkSeparated a, b, tolerance, poll
+      stats.supportSeparations++ if stats
       return false
-    }
     // Barycentric and geometric margins differ. Retain the original geometric
     // decision for shallow overlaps, failed pivots, or GJK stagnation.
-    if (stats) stats.fallbacks++
-  }
-  let iterations = 0
-  for (const ids of combinations(planes.length, k + 1)) {
-    if ((iterations++ % 256) is 0) poll()
-    const solution = solveLinear(ids.map((i) => [...planes[i].normal, 1]), ids.map((i) => planes[i].offset), 1e-13)
+    stats.fallbacks++ if stats
+  iterations .= 0
+  for ids of combinations planes#, k + 1
+    poll() if iterations++ % 256 is 0
+    solution := solveLinear ids.map((i) => [...planes[i].normal, 1]), ids.map((i) => planes[i].offset), 1e-13
     // Re-evaluate all actual inequalities instead of trusting the computed t.
-    if (solution and inside(solution.slice(0, k))) return true
-  }
-  return false
-}
+    return true if solution and inside solution[<k]
+  false
 
-export function developTree(poly: Polytope, tree: number[], root = 0): Placement[] {
-  if (tree.length !== poly.facets.length - 1 or new Set(tree).size !== tree.length or tree.some((id) => not Number.isInteger(id) or not poly.ridges[id])) {
-    throw new Error('Expected distinct ridge IDs forming a spanning tree.')
-  }
-  const placements = new Map<number, Placement>([[root, rootPlacement(poly, root)]])
-  const queue = [root]
-  for (let i = 0; i < queue.length; i++) {
-    const f = queue[i]
-    for (const id of tree) {
-      const ridge = poly.ridges[id]
-      if (not ridge.facets.includes(f)) continue
-      const child = ridge.facets[0] is f ? ridge.facets[1] : ridge.facets[0]
-      if (not placements.has(child)) {
-        placements.set(child, attachFacet(poly, placements.get(f)!, id))
-        queue.push(child)
-      }
-    }
-  }
-  if (placements.size !== poly.facets.length) throw new Error('Ridge IDs do not form a spanning tree.')
-  return [...placements.values()].sort((a, b) => a.facet - b.facet)
-}
+export function developTree(poly: Polytope, tree: number[], root = 0): Placement[]
+  if tree# is not poly.facets# - 1 or new Set(tree).size is not tree# or tree.some (id) => not Number.isInteger(id) or not poly.ridges[id]
+    throw new Error 'Expected distinct ridge IDs forming a spanning tree.'
+  placements := new Map<number, Placement> [[root, rootPlacement poly, root]]
+  queue := [root]
+  for i .= 0; i < queue#; i++
+    f := queue[i]
+    for id of tree
+      ridge := poly.ridges[id]
+      continue unless f is in ridge.facets
+      child := ridge.facets[0] is f ? ridge.facets[1] : ridge.facets[0]
+      unless placements.has child
+        placements.set child, attachFacet poly, placements.get(f)!, id
+        queue.push child
+  throw new Error 'Ridge IDs do not form a spanning tree.' if placements.size is not poly.facets#
+  [...placements.values()].sort (a, b) => a.facet - b.facet

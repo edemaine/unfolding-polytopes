@@ -1,27 +1,43 @@
-import {readFileSync, writeFileSync} from 'node:fs'
-interface Row {index: number; d: number; points: number; seed: number; method: string; solveMs: number; pairMs: number; pairs: number; overlaps: number; nodes: number; facets: number; solveStats: {fallbacks: number; calls: number};}
-const data = JSON.parse(readFileSync('bench/output/sampled-results.json', 'utf8')) as {date: string; node: string; cases: unknown[]; rows: Row[]; failures: unknown[]; pairComparisons: number; searchComparisons: number}
-const {rows} = data
-const analyticChecks = data.pairComparisons - rows.filter((r) => r.method !== 'enumerate').reduce((sum, r) => sum + r.pairs, 0)
-if (new Set(rows.map((r) => r.index)).size !== data.cases.length or analyticChecks !== 90 * new Set(rows.map((r) => r.method)).size) throw new Error('The sampled benchmark is not complete yet.')
-const methods = [...new Set(rows.map((r) => r.method))].sort()
-const groups = [...new Set(rows.map((r) => `${r.d}/${r.points}`))]
-function median(values: number[]): number { const sorted = [...values].sort((a, b) => a - b), mid = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2; }
-let report = `# Benchmarks sampled from saved runs\n\n${data.date}, Node ${data.node}. ${data.cases.length} cases across ${groups.length} parameter sets; ${data.pairComparisons} pair comparisons and ${data.searchComparisons} bounded-search comparisons, with **${data.failures.length} disagreements**. Counts include repeated timings and repeated pairs, not distinct geometric configurations.\n\n`
+{readFileSync, writeFileSync} from node:fs
+interface Row
+  index: number
+  d: number
+  points: number
+  seed: number
+  method: string
+  solveMs: number
+  pairMs: number
+  pairs: number
+  overlaps: number
+  nodes: number
+  facets: number
+  solveStats: {fallbacks: number; calls: number}
+
+data := JSON.parse(readFileSync 'bench/output/sampled-results.json', 'utf8') as {date: string; node: string; cases: unknown[]; rows: Row[]; failures: unknown[]; pairComparisons: number; searchComparisons: number}
+{rows} := data
+analyticChecks := data.pairComparisons - rows.filter((r) => r.method is not 'enumerate').reduce (sum, r) => sum + r.pairs, 0
+throw new Error('The sampled benchmark is not complete yet.') if new Set(rows.map(.index)).size is not data.cases# or analyticChecks is not 90 * new Set(rows.map(.method)).size
+methods := [...new Set rows.map(.method)].sort()
+groups := [...new Set rows.map (r) => `${r.d}/${r.points}`]
+function median(values: number[]): number
+  sorted := [...values].sort (a, b) => a - b
+  mid := Math.floor sorted# / 2
+  sorted# % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+
+report .= `# Benchmarks sampled from saved runs\n\n${data.date}, Node ${data.node}. ${data.cases#} cases across ${groups#} parameter sets; ${data.pairComparisons} pair comparisons and ${data.searchComparisons} bounded-search comparisons, with **${data.failures#} disagreements**. Counts include repeated timings and repeated pairs, not distinct geometric configurations.\n\n`
 report += 'The portable case list contains exact input coordinates and numerical settings. The default suite samples the first, middle, and slowest recorded seeds for each parameter set, prioritizing inconclusive cases; it also includes three planned 6D/20-point examples. The default fixtures are in [sampled-cases.json](../sampled-cases.json); the raw output embeds the cases actually used.
 
 '
 report += 'For each polytope, two deterministic randomized breadth-first developments sample adjacent and arbitrary facet pairs. Available backends are compared against the original enumeration predicate at the saved tolerance. Each backend also repeats a 40-node search twice, rotating execution order, and checks node/prune/solution counts, status, termination, and the first witness tree against enumeration. Limits bound benchmark work and do not establish whether unfinished cases unfold. Hull construction, startup, and baseline preparation are excluded from timing; LP creation, solving, verification, and fallbacks are included.\n\n'
 report += 'Of the pair comparisons, ' + analyticChecks + ' analytic checks use rotated boxes in unfolded dimensions 1-5, with tolerances 1e-10, 1.6e-8, and 1e-6. Signed intersection depths are -4, 0, 1, 1.9, 2.1, and 4 times tolerance. These check separation, exact contact, and intersections just below/above the allowed geometric margin independently of enumeration.\n\n'
 report += 'Median search milliseconds across selected seeds and both repetitions (dimension / point count):\n\n'
-const displayed = methods
-report += `| d / points | ${displayed.join(' | ')} |\n|---|${displayed.map(=> '---:').join('|')}|\n`
-for (const group of groups) report += `| ${group} | ${displayed.map((method) => median(rows.filter((r) => `${r.d}/${r.points}` is group and r.method is method).map((r) => r.solveMs)).toFixed(2)).join(' | ')} |\n`
+displayed := methods
+report += `| d / points | ${displayed.join ' | '} |\n|---|${displayed.map(=> '---:').join '|'}|\n`
+for (group of groups) report += `| ${group} | ${displayed.map((method) => median(rows.filter((r) => `${r.d}/${r.points}` is group and r.method is method).map(.solveMs)).toFixed 2).join ' | '} |\n`
 report += '\nAggregate pair-test and search timings across all measured cases and repetitions (seconds):\n\n| Method | Pair tests | Searches | Search fallbacks |\n|---|---:|---:|---:|\n'
-for (const method of methods) {
-  const sample = rows.filter((r) => r.method is method)
-  report += `| ${method} | ${(sample.reduce((s, r) => s + r.pairMs, 0) / 1000).toFixed(2)} | ${(sample.reduce((s, r) => s + r.solveMs, 0) / 1000).toFixed(2)} | ${sample.reduce((s, r) => s + r.solveStats.fallbacks, 0)} |\n`
-}
+for method of methods
+  sample := rows.filter (r) => r.method is method
+  report += `| ${method} | ${(sample.reduce((s, r) => s + r.pairMs, 0) / 1000).toFixed 2} | ${(sample.reduce((s, r) => s + r.solveMs, 0) / 1000).toFixed 2} | ${sample.reduce (s, r) => s + r.solveStats.fallbacks, 0} |\n`
 report += '\nTimings are workload-specific, on a shared machine; short measurements are noisy. Agreement includes fallback behavior and is not a proof of floating-point correctness. Raw samples and any disagreements are in [sampled-results.json](sampled-results.json).\n\nReproduce the frozen selection with `pnpm bench:sampled`, then `pnpm bench:sampled-report`. To sample local runs, use `pnpm bench:select-sampled`, then `pnpm bench:sampled`. Generated artifacts go under `bench/output/`.\n'
-writeFileSync('bench/output/sampled.md', report)
-console.log(report)
+writeFileSync 'bench/output/sampled.md', report
+console.log report
