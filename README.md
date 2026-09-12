@@ -219,6 +219,14 @@ Strictly positive weights characterize interior intersection for these full-dime
 
 ## Generators and API
 
+Use `--random-scales 100` to choose axis scales automatically for each polytope:
+
+```sh
+pnpm search --dimension 4 --points 10 --random-scales 100
+```
+
+Each scale is independently log-uniform in `[1/R, 1]`, where `R` is the supplied value (finite and at least 1). Thus 100 allows aspect ratios up to 100, without forcing that ratio. Scale draws are deterministic per seed and use a separate stream from point generation. This works with every point distribution and is mutually exclusive with `--scales`. Trials save the range and actual scales; missing trials regenerate the appropriate scales for their own seed. Automatic seed allocation and timing groups distinguish the sampling range, rather than each trial's particular scales.
+
 Import from `src/index.civet`:
 
 ```ts

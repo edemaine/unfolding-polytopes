@@ -1,7 +1,7 @@
 {appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync} from node:fs
 {dirname, join, resolve, sep} from node:path
 {hostname} from node:os
-{branchOrders, hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, simplex, solve} from ./index.civet
+{branchOrders, hullMethods, overlapMethods, convexHull, crossPolytope, cyclic, hypercube, hypersimplex, randomPoints, randomScales, simplex, solve} from ./index.civet
 type {Distribution, HullOptions, Polytope, SolveOptions, SolveResult} from ./index.civet
 type {Vector} from ./linalg.civet
 {formatSummary, summarizeResults} from ./summary.civet
@@ -37,6 +37,7 @@ Generation options:
   --distribution NAME  sphere (default), ball, gaussian, box
   --weight N           Hypersimplex weight in dimension+1 coordinates (default 2)
   --scales X,Y,...     Positive axis scale factors (default all 1)
+  --random-scales R    Sample each axis scale log-uniformly in [1/R,1], per seed
 
 Geometry and solver options:
   --tolerance X        Hull tolerance after normalization (default 1e-9)
@@ -74,7 +75,7 @@ Statuses: found, no-unfolding (exhausted numerical candidate), inconclusive (lim
 Boundary contact is permitted. Floating-point results are not certified proofs.
 Timeout covers tree search; hull construction has a separate combination limit.`
 
-values := new Set ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order', 'coverage-root']
+values := new Set ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'random-scales', 'tolerance', 'hull-method', 'overlap-tolerance', 'overlap-method', 'max-hull-combinations', 'max-nodes', 'timeout-ms', 'root', 'output', 'trials', 'forward-check', 'branch-order', 'coverage-root']
 switches := new Set ['help', 'all', 'no-prune', 'json', 'by-run', 'include-timeouts', 'nodes', 'no-force-bridges', 'full-output', 'dry-run', 'ignore-coverage']
 
 function main(args: string[]): void
@@ -143,7 +144,7 @@ function main(args: string[]): void
   throw new Error('--json only applies to summary or timings.') if flags.has 'json'
   if command is 'retry'
     throw new Error('retry requires a saved run directory.') unless file
-    for name of ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'trials']
+    for name of ['family', 'dimension', 'points', 'seed', 'distribution', 'weight', 'scales', 'random-scales', 'trials']
       throw new Error(`--${name} does not apply to retry; it reuses saved points.`) if flags.has name
 
   function number(name: string, fallback: number): number
@@ -167,6 +168,9 @@ function main(args: string[]): void
   distribution := (flags.get('distribution') ?? 'sphere') as Distribution
   weight := integer 'weight', 2, 1
   scales := flags.has('scales') ? flags.get('scales')!.split(',').map(Number) : Array(d).fill 1
+  scaleRatio := flags.has('random-scales') ? number('random-scales', 100) : undefined
+  throw new Error('Use either --scales or --random-scales.') if scaleRatio is not undefined and flags.has 'scales'
+  throw new Error('--random-scales must be finite and >= 1.') if scaleRatio is not undefined and not (Number.isFinite(scaleRatio) and scaleRatio >= 1)
   throw new Error('--scales needs one positive finite factor per dimension.') if scales# is not d or scales.some (x) => not (x > 0 and Number.isFinite x)
 
   function generate(currentSeed: number): {points: Vector[]; generator: GeneratorSpec}
@@ -187,7 +191,8 @@ function main(args: string[]): void
       else
         throw new Error `Unknown family: ${family}`
 
-    points: points.map((p) => p.map (x, j) => x * scales[j]), generator: {family, dimension: d, count: points#, seed: currentSeed, distribution, weight, scales}
+    actualScales := scaleRatio is undefined ? scales : randomScales(d, currentSeed, scaleRatio)
+    points: points.map((p) => p.map (x, j) => x * actualScales[j]), generator: {family, dimension: d, count: points#, seed: currentSeed, distribution, weight, scales: actualScales, randomScales: scaleRatio}
 
   function json(value: unknown): string
     JSON.stringify(value, (_, v) => v is Infinity ? 'Infinity' : v, 2) + '\n'
@@ -353,7 +358,7 @@ function main(args: string[]): void
     trials := integer 'trials', 100, 1
     throw new Error('Seed range exceeds safe integers.') unless Number.isSafeInteger seed + trials - 1
     allocation := withSeedLock parent, =>
-      spec: GeneratorSpec := {family, dimension: d, count, seed, distribution, weight, scales}
+      spec: GeneratorSpec := {family, dimension: d, count, seed, distribution, weight, scales, randomScales: scaleRatio}
       startSeed := flags.has('seed') ? seed : nextSearchSeed parent, spec, trials
       throw new Error('Seed range exceeds safe integers.') unless Number.isSafeInteger startSeed + trials - 1
       firstInput := generate startSeed

@@ -34,7 +34,7 @@ interface GroupParameters
   dimension: number | null
   points: number | null
   outcome: string
-  parameters: {family?: string; distribution?: string; scales?: number[]; weight?: number}
+  parameters: {family?: string; distribution?: string; scales?: number[]; randomScales?: number; weight?: number}
 
 export type TimingGroup = GroupParameters & (TimingDistribution | NodeDistribution)
 export interface TimingReport
@@ -125,7 +125,9 @@ export function summarizeTimings(path = 'results', byRun = false, includeTimeout
     parameters.distribution = generator.distribution <? 'string' ? generator.distribution : 'sphere' if family is 'random'
     parameters.weight = generator.weight if family is 'hypersimplex' and Number.isFinite generator.weight
     if dimension is not null and generator
-      if generator.scales is undefined
+      if Number.isFinite(generator.randomScales) and generator.randomScales >= 1
+        parameters.randomScales = generator.randomScales
+      else if generator.scales is undefined
         parameters.scales = Array(dimension).fill 1
 
       else if Array.isArray(generator.scales) and generator.scales# is dimension and generator.scales.every (s: unknown) => s <? 'number' and Number.isFinite s
@@ -168,7 +170,7 @@ export function formatTimings(report: TimingReport): string
   for group of report.groups
     p := group.parameters
     parameters := (p.family is 'random' ? p.distribution : p.family) ?? '?'
-    detail := (p.weight is undefined ? '' : ` weight=${p.weight}`) + (p.scales?.some((s) => s is not 1) ? ` scales=${p.scales.join ','}` : '')
+    detail := (p.weight is undefined ? '' : ` weight=${p.weight}`) + (p.randomScales is undefined ? '' : ` random-scales=${p.randomScales}`) + (p.scales?.some((s) => s is not 1) ? ` scales=${p.scales.join ','}` : '')
     rows.push [...report.byRun ? [relative(report.directory, group.directory!) or '.'] : [], String(group.dimension ?? '?'), String(group.points ?? '?'), parameters + detail, group.outcome, ...cells group]
   if report.groups#
     rows.push Array(header#).fill ''

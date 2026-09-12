@@ -4,7 +4,7 @@ assert from node:assert/strict
 {hostname, tmpdir} from node:os
 {join, resolve} from node:path
 {spawnSync} from node:child_process
-{convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from ../src/index.civet
+{convexHull, simplex, hypercube, crossPolytope, cyclic, hypersimplex, randomPoints, randomScales, prism, pyramid, product, solve, developTree, mapPoint, interiorOverlap, attachFacet, rootPlacement} from ../src/index.civet
 {affineBasis, apply, combinations, dot, mul, norm, sub} from ../src/linalg.civet
 type {Vector} from ../src/linalg.civet
 type {Placement, Polytope, OverlapMethod} from ../src/index.civet
@@ -356,6 +356,40 @@ test 'generators are reproducible and produce expected dimensions', =>
   assert.throws => randomPoints(3, 3), /count/
   assert.throws => simplex(1), /Dimension/;
 
+
+test 'random scales reproduce per seed, resume missing trials, and group by sampling range', =>
+  directory := mkdtempSync join tmpdir(), 'unfolding-random-scales-'
+  try
+    assert.deepEqual randomScales(4, 12), randomScales 4, 12
+    assert.notDeepEqual randomScales(4, 12), randomScales 4, 13
+    assert.ok randomScales(4, 12).every (x) => x >= .01 and x <= 1
+    assert.deepEqual randomScales(4, 12, 1), [1, 1, 1, 1]
+    assert.throws => randomScales(4, 12, 0), /aspect ratio/
+    batch := cli ['search', '--dimension', '3', '--points', '5', '--random-scales', '100', '--trials', '2', '--max-nodes', '0', '--output', directory]
+    assert.equal batch.status, 0, String batch.stderr
+    run := join directory, readdirSync(directory).find((name) => name.startsWith 'run-')!
+    files := [0, 1].map (seed) => join run, trialName seed, seed
+    records := files.map (file) => JSON.parse readFileSync file, 'utf8'
+    for record of records
+      assert.deepEqual record.generator.scales, randomScales 3, record.generator.seed, 100
+      assert.deepEqual record.points, generatedInput(record.generator).points
+    assert.notDeepEqual records[0].generator.scales, records[1].generator.scales
+    assert.equal nextSearchSeed(directory, {...records[1].generator, seed: 123}, 2), 2
+    assert.equal nextSearchSeed(directory, {...records[1].generator, randomScales: 10}, 2), 0
+    unlinkSync files[1]
+    retried := cli ['retry', run, '--max-nodes', '0']
+    assert.equal retried.status, 0, String retried.stderr
+    for row of String(retried.stdout).trim().split('\n').map (line) => JSON.parse line
+      saved := JSON.parse readFileSync row.outputFile, 'utf8'
+      assert.deepEqual saved.points, records[row.seed].points
+      assert.deepEqual saved.generator.scales, records[row.seed].generator.scales
+    report := summarizeTimings directory
+    assert.equal report.groups#, 1
+    assert.equal report.groups[0].parameters.randomScales, 100
+    assert.equal report.groups[0].parameters.scales, undefined
+    assert.equal cli(['generate', '--random-scales', '100', '--scales', '1,1,1,1']).status, 1
+  finally
+    rmSync directory, recursive: true, force: true
 
 test 'CLI generation, file solve, saved batches, cutoff and argument errors', =>
   directory := mkdtempSync join tmpdir(), 'unfolding-test-'

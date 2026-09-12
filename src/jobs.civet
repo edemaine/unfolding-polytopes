@@ -1,6 +1,6 @@
 {existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync} from node:fs
 {basename, join} from node:path
-{randomPoints} from ./generators.civet
+{randomPoints, randomScales} from ./generators.civet
 type {Distribution} from ./generators.civet
 type {HullOptions} from ./polytope.civet
 type {SolveOptions} from ./solver.civet
@@ -13,6 +13,7 @@ export interface GeneratorSpec
   seed: number
   distribution?: Distribution
   scales?: number[]
+  randomScales?: number
   weight?: number
 
 export interface TrialTask
@@ -50,9 +51,9 @@ export function trialStatuses(directory: string): {statuses: Map<string, string>
 
 export function generatedInput(generator: GeneratorSpec): {points: Vector[]; generator: GeneratorSpec}
   throw new Error('Missing trial requires a saved random generator.') if generator.family is not 'random'
-  scales := generator.scales ?? Array(generator.dimension).fill 1
+  scales := generator.randomScales is undefined ? generator.scales ?? Array(generator.dimension).fill(1) : randomScales(generator.dimension, generator.seed, generator.randomScales)
   throw new Error('Invalid saved generator scales.') if scales# is not generator.dimension or scales.some (x) => not (x > 0 and Number.isFinite x)
-  {points: randomPoints(generator.dimension, generator.count, generator.seed, generator.distribution ?? 'sphere').map((p) => p.map (x, j) => x * scales[j]), generator}
+  {points: randomPoints(generator.dimension, generator.count, generator.seed, generator.distribution ?? 'sphere').map((p) => p.map (x, j) => x * scales[j]), generator: generator.randomScales is undefined ? generator : {...generator, scales}}
 
 // Describe unexecuted tasks without allocating their point sets. New retries
 // persist these descriptors, so an interrupted retry is itself resumable.
@@ -108,7 +109,7 @@ export function taskInput(task: TrialTask): {points: Vector[]; generator?: Gener
   throw new Error `Cannot reconstruct missing trial ${task.sourceFile ?? task.name}`
 
 function generatorKey(g: GeneratorSpec): string
-  JSON.stringify [g.family, g.dimension, g.count, g.distribution ?? 'sphere', g.scales ?? Array(g.dimension).fill 1]
+  JSON.stringify [g.family, g.dimension, g.count, g.distribution ?? 'sphere', g.randomScales is undefined ? g.scales ?? Array(g.dimension).fill(1) : {randomScales: g.randomScales}]
 
 // The entire planned range is reserved, even for unfinished runs. Matching
 // ignores tolerances and solver limits, which do not affect generated points.

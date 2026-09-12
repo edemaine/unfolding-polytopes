@@ -16,6 +16,14 @@ export function randomSource(seed: number): => number
 
 export type Distribution = 'sphere' | 'ball' | 'gaussian' | 'box'
 
+// A separate deterministic stream keeps scale choices separate from point sampling.
+export function randomScales(d: number, seed: number, maxRatio = 100): number[]
+  dimension d
+  throw new Error('Seed must be a safe integer.') unless Number.isSafeInteger seed
+  throw new Error('Maximum aspect ratio must be finite and >= 1.') unless Number.isFinite(maxRatio) and maxRatio >= 1
+  random := randomSource seed ^ 0x6a09e667
+  Array.from length: d, => maxRatio ** -random()
+
 export function randomPoints(d: number, count: number, seed = 0, distribution: Distribution = 'sphere'): Vector[]
   dimension d
   throw new Error('Point count must be an integer >= d+1.') if not Number.isSafeInteger(count) or count < d + 1
